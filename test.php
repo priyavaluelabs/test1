@@ -1,35 +1,47 @@
-/**
- * Create a new Stripe customer.
- *
- * This endpoint registers a customer in your Stripe account using
- * the provided email, name, and optional description.
- *
- * @param  \Illuminate\Http\Request  $request
- * @return \Illuminate\Http\JsonResponse
- */
-public function createStripeCustomer(Request $request)
+use Stripe\StripeClient;
+
+public function createOrGetCustomer(Request $request)
 {
-    // Validate required fields
-    $request->validate([
-        'email'       => 'required|email',
-        'name'        => 'nullable|string',
-        'description' => 'nullable|string',
-    ]);
+    try {
+        $stripe = new StripeClient(env('STRIPE_SECRET'));
 
-    // Initialize the Stripe API client
-    $stripe = new StripeClient(config('services.stripe.secret'));
+        $connectedAccountId = $request->account_id; // e.g. acct_123
+        $email = $request->email;                   // customer email
 
-    // Create a new customer in Stripe
-    $customer = $stripe->customers->create([
-        'email'       => $request->email,                         // Customer email
-        'name'        => $request->name,                          // Optional customer name
-        'description' => $request->description ??                 // Optional custom description
-                           'Customer created via API',            // Default fallback
-    ]);
+        // 1️⃣ Check if customer already exists in this connected account
+        $existing = $stripe->customers->all(
+            ['email' => $email],
+            ['stripe_account' => $connectedAccountId]
+        );
 
-    // Return customer details as API response
-    return response()->json([
-        'customer_id' => $customer->id,
-        'customer'    => $customer,
-    ]);
+        if (!empty($existing->data)) {
+            // Customer found → return existing customer
+            return response()->json([
+                'status' => 'exists',
+                'customer' => $existing->data[0],
+            ]);
+        }
+
+        // 2️⃣ Create new customer in connected account
+        $customer = $stripe->customers->create(
+            [
+                'email' => $email,
+                'name'  => $request->name,
+                'metadata' => [
+                    'source' => 'my-app',
+                ],
+            ],
+            ['stripe_account' => $connectedAccountId]
+        );
+
+        return response()->json([
+            'status' => 'created',
+            'customer' => $customer,
+        ]);
+
+    } catch (\Exception $e) {
+        return response()->json([
+            'error' => $e->getMessage(),
+        ], 400);
+    }
 }
