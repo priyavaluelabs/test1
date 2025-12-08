@@ -400,3 +400,10 @@ class ApiPTBillingStripeCustomerController extends ApiController
     }
 }
 
+
+Please avoid sending the entire request instance to the service class (it's okay for the controller helper method) as this method then becomes tightly coupled with the controller. If later on we want to use this in jobs, the request instance will not be available, making it harder.
+
+This is also a side effect. Use either the setter method (by passing the Model instance of the trainer) or pass the model instance via the constructor.
+
+If the trainer's dependency is already in the constructor, use it; otherwise, pass the trainer instance directly and remove the constructor dependency (preferred).
+
