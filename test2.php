@@ -1,52 +1,37 @@
-<?php 
-
-namespace Klyp\Nomergy\Http\Requests;
-
-use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Validation\Validator;
-use Klyp\Nomergy\Models\UserPortal;
-
-class PTBillingStripePaymentHistoryByCustomerRequest extends FormRequest
-{
-    public function authorize()
+/**
+     * Add custom validations AFTER default validation.
+     */
+    public function withValidator(Validator $validator)
     {
-        return true;
-    }
+        $validator->after(function ($validator) {
 
-    public function rules()
-    {
-        return [
-            'trainer_id'  => 'required|integer|exists:mysql_portal.users,id',
-            'customer_id' => 'required|string',
-            'limit'       => 'nullable|integer|min:1|max:100',
-        ];
-    }
+            // If any field already has errors, skip additional validation
+            if ($validator->errors()->has('trainer_id')) {
+                return;
+            }
+            
+            // Fetch trainer from another database connection
+            $trainer = UserPortal::on('mysql_portal')->find($this->trainer_id);
 
-    public function messages()
-    {
-        return [
-            'trainer_id.required' => 'Trainer ID is required.',
-            'trainer_id.exists'   => 'Trainer does not exist in the portal database.',
-            'customer_id.required' => 'Customer ID is required.',
-            'limit.integer'        => 'Limit must be an integer.',
-            'limit.min'            => 'Limit must be at least :min.',
-            'limit.max'            => 'Limit cannot be greater than :max.',
-        ];
-    }
-}
-
-
-public function mustBeUniqueEmail()
-    {
-        return function ($attribute, $value, $fail) {
-            $user = User::where('email', $value)->first();
-
-            // If the user is not found or the flex_user_id is the same as the one in the request, 
-            // the request is for updating the user. Hence, the email is valid.
-            if( !$user || $user->flex_user_id == $this->flex_user_id) {
+            // Validate trainer onboarding + Stripe connection
+            if (
+                !$trainer ||
+                !$trainer->stripe_account_id ||
+                !$trainer->is_onboarded
+            ) {
+                $validator->errors()->add(
+                    'trainer_id',
+                    __('klyp.nomergy::fod.trainer_not_in_stripe')
+                );
                 return;
             }
 
-            $fail('The email has already been taken for flex user id ' . $user->flex_user_id);
-        };
+            // Validate that the customer ID belongs to this trainer
+            if ($this->customer_id !== $trainer->stripe_customer_id) {
+                $validator->errors()->add(
+                    'customer_id',
+                    __('klyp.nomergy::fod.stripe_unautorized_access_error')
+                );
+            }
+        });
     }
