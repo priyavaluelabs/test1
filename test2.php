@@ -1,37 +1,59 @@
-/**
-     * Add custom validations AFTER default validation.
-     */
-    public function withValidator(Validator $validator)
+<?php 
+
+namespace Klyp\Nomergy\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+use Klyp\Nomergy\Models\UserPortal;
+
+class PTBillingStripePaymentHistoryByCustomerRequest extends FormRequest
+{
+    public function authorize()
     {
-        $validator->after(function ($validator) {
+        return true;
+    }
 
-            // If any field already has errors, skip additional validation
-            if ($validator->errors()->has('trainer_id')) {
-                return;
-            }
-            
-            // Fetch trainer from another database connection
-            $trainer = UserPortal::on('mysql_portal')->find($this->trainer_id);
+    public function rules()
+    {
+        return [
+            'trainer_id'  => ['required', 'integer', $this->validateTrainerExist(), $this->matchTrainerCustomer()],
+            'customer_id' => ['required', 'string'],
+            'limit'       => ['nullable', 'integer', 'min:1', 'max:100'],
+        ];
+    }
 
-            // Validate trainer onboarding + Stripe connection
-            if (
-                !$trainer ||
+    public function messages()
+    {
+        return [
+            'trainer_id.required' => 'Trainer ID is required.',
+            'customer_id.required' => 'Customer ID is required.',
+            'limit.integer'        => 'Limit must be an integer.',
+            'limit.min'            => 'Limit must be at least :min.',
+            'limit.max'            => 'Limit cannot be greater than :max.',
+        ];
+    }
+
+    public function validateTrainerExist()
+    {
+        return function ($attribute, $value, $fail) {
+            $trainer = UserPortal::where('id', $value)->first();
+       
+            if (!$trainer ||
                 !$trainer->stripe_account_id ||
                 !$trainer->is_onboarded
             ) {
-                $validator->errors()->add(
-                    'trainer_id',
-                    __('klyp.nomergy::fod.trainer_not_in_stripe')
-                );
-                return;
+               return $fail(__('klyp.nomergy::fod.trainer_not_in_stripe'));
             }
-
-            // Validate that the customer ID belongs to this trainer
-            if ($this->customer_id !== $trainer->stripe_customer_id) {
-                $validator->errors()->add(
-                    'customer_id',
-                    __('klyp.nomergy::fod.stripe_unautorized_access_error')
-                );
-            }
-        });
+        };
     }
+
+    public function matchTrainerCustomer()
+    {
+        return function ($attribute, $value, $fail) {
+            $trainer = UserPortal::where('id', $value)->first();
+       
+            if ($this->customer_id !== $trainer->stripe_customer_id) {
+               return $fail(__('klyp.nomergy::fod.stripe_unautorized_access_error'));
+            }
+        };
+    }
+}
