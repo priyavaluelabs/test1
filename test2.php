@@ -1,95 +1,78 @@
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Cache;
-use Sushi\Sushi;
-use Stripe\StripeClient;
-
-class StripeProduct extends Model
-{
-    use Sushi;
-
-    protected $primaryKey = 'id';
-    public $incrementing = false;
-    protected $keyType = 'string';
-
-    protected $schema = [
-        'id' => 'string',
-        'name' => 'string',
-        'description' => 'string',
-        'price' => 'float',
-        'currency' => 'string',
-        'active' => 'boolean',
-    ];
-
-    protected $fillable = ['price', 'description', 'active'];
-
-    /**
-     * Sushi rows - pull from cache or Stripe
-     */
-    public function getRows()
+public function save(StripeClient $stripe): void
     {
-        return self::getCachedRows();
-    }
+        $record = StripeProduct::find($this->editForm['id']);
 
-    /**
-     * Fetch products from Stripe and cache
-     */
-    public static function getCachedRows(): array
-    {
-        $userId = Auth::id();
-        $cacheKey = "stripe_products_user_{$userId}";
-
-        return Cache::remember($cacheKey, now()->addMinutes(30), function () {
-            return self::fetchStripeProducts();
-        });
-    }
-
-    /**
-     * Clear cache of products for current user
-     */
-    public static function clearCacheForUser()
-    {
-        if (! Auth::check()) {
+        if (! $record) {
+            Notification::make()
+                ->title(__('stripe.no_stripe_product'))
+                ->danger()
+                ->send();
             return;
         }
 
-        $userId = Auth::id();
-        $cacheKey = "stripe_products_user_{$userId}";
-        Cache::forget($cacheKey);
-    }
+        $data = $this->editForm;
 
-    /**
-     * Actually fetch from Stripe
-     */
-    private static function fetchStripeProducts(): array
-    {
-        $stripe = new StripeClient(config('services.stripe.secret'));
-    
-        $products = $stripe->products->all(
-            ['limit' => config('services.stripe.product_limit'), 'expand' => ['data.default_price']],
-            ['stripe_account' => Auth::user()->stripe_account_id]
-        );
+        $hasDescriptionChange = filled($data['description']) && $data['description'] !== $record->description;
+        $hasActiveChange = isset($data['active']) && (bool) $data['active'] !== (bool) $record->active;
+        $hasPriceChange = filled($data['price']) && (float) $data['price'] !== (float) $record->price;
 
-        $rows = [];
-        foreach ($products->data as $product) {
-            $priceObj = $product->default_price;
-            $priceValue = $priceObj?->unit_amount ? $priceObj->unit_amount / 100 : null;
-            $currency = $priceObj?->currency ?? null;
-
-            $rows[] = [
-                'id' => $product->id,
-                'name' => $product->name,
-                'description' => $product->description ?? '',
-                'active' => (bool)$product->active,
-                'price' => $priceValue,
-                'currency' => $currency,
-            ];
+        if (! ($hasDescriptionChange || $hasActiveChange || $hasPriceChange)) {
+            Notification::make()
+                ->title(__('stripe.error_no_field_update'))
+                ->warning()
+                ->send();
+            return;
         }
 
-        return $rows;
+        try {
+            $trainerAccount = Auth::user()->stripe_account_id;
+
+            // Update product fields
+            if ($hasDescriptionChange || $hasActiveChange) {
+                $stripe->products->update(
+                    $record->id,
+                    [
+                        'description' => $data['description'],
+                        'active' => (bool) $data['active'],
+                    ],
+                    ['stripe_account' => $trainerAccount]
+                );
+            }
+
+            // Update price (creates new Stripe price)
+            if ($hasPriceChange) {
+                $newPrice = $stripe->prices->create(
+                    [
+                        'product' => $record->id,
+                        'unit_amount' => (int) round($data['price'] * 100),
+                        'currency' => $record->currency,
+                    ],
+                    ['stripe_account' => $trainerAccount]
+                );
+
+                $stripe->products->update(
+                    $record->id,
+                    ['default_price' => $newPrice->id],
+                    ['stripe_account' => $trainerAccount]
+                );
+            }
+
+            // Refresh cache & UI
+            StripeProduct::clearCacheForUser();
+            $this->products = StripeProduct::getCachedRows();
+
+            $this->isEditing = false;
+            $this->dispatch('close-modal', id: 'edit-product');
+
+            Notification::make()
+                ->title(__('stripe.product_update_success'))
+                ->success()
+                ->send();
+
+        } catch (\Throwable $e) {
+            Notification::make()
+                ->title(__('stripe.error_update_product'))
+                ->danger()
+                ->send();
+        }
     }
-}
