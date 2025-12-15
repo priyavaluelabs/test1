@@ -1,170 +1,119 @@
-<?php
+import { loadConnectAndInitialize } from "@stripe/connect-js";
 
-namespace Klyp\Nomergy\Services\Stripe;
+/**
+ * Mount a single Stripe Dashboard component
+ */
+window.mountStripeDashboard = async function ({
+    publishableKey,
+    clientSecret,
+    type,
+    containerId,
+    loaderId
+}) {
+    const container = document.getElementById(containerId);
+    const loader = document.getElementById(loaderId);
 
-use Klyp\Nomergy\Models\UserPortal;
-use Stripe\StripeClient;
-
-class PTBillingStripeCustomerService
-{
-    /**
-     * Stripe client instance for making API calls.
-     *
-     * @var StripeClient
-     */
-    protected $stripe;
-
-    /**
-     * Trainer model (optional — only if you want to store trainer info here)
-     *
-     * @var User
-     */
-    protected $trainer;
-
-    /**
-     * Constructor to initialize the Stripe client with the secret key from config.
-     *
-     */
-    public function __construct(UserPortal $trainer)
-    {
-        $this->trainer = $trainer;
-        $this->stripe = new StripeClient(config('services.stripe.secret_key'));
+    if (!container) {
+        console.error("Stripe container not found:", containerId);
+        return;
     }
 
-    /**
-     * Retrieve a list of payment history for a given Stripe customer.
-     *
-     * @param  \Illuminate\Http\Request  $request
-     *
-     */
-    public function getPaymentHistory($request): array
-    {
-        // Fetch payment intents from Stripe with expansion of related data
-        $paymentIntents = $this->stripe->paymentIntents->all([
-            'customer' => $request->customer_id,
-                'expand' => [
-                    'data.payment_method',
-                    'data.charges.data.balance_transaction',
-                ],
-                'limit' => $request->limit,
-            ],
-            ['stripe_account' => $this->trainer->stripe_account_id]
-        );
+    container.innerHTML = ""; // Clear previous component
+    if (loader) loader.style.display = "flex";
 
-        $result = [];
+    try {
+        const stripeConnect = await loadConnectAndInitialize({
+            publishableKey,
+            fetchClientSecret: async () => clientSecret,
+            appearance: {
+                theme: "stripe",
+                overlays: "dialog",
 
-        // Process each payment intent
-        foreach ($paymentIntents->data as $pi) {
-            // Handle amount: fallback to `amount` if `amount_received` is missing
+                variables: {
+                    colorPrimary: "#b6111c",
+                    borderRadius: "8px",
+                    spacingUnit: "10px",
+                    fontWeightMedium: "600",
+                    buttonPaddingY: "10px",
+                    buttonPaddingX: "16px",
+                    colorText: "#111827",
+                    colorBackground: "#ffffff",
+                    colorBorder: "#e5e7eb",
+                },
 
-            $amount   = $pi->amount_received ?? $pi->amount;
-            $currency = strtoupper($pi->currency);
+                rules: {
+                    ".Button": {
+                        height: "44px",
+                        lineHeight: "44px",
+                        borderRadius: "8px",
+                        border: "1px solid #e5e7eb",
+                    },
+                    ".Button--primary": {
+                        backgroundColor: "#b6111c",
+                        color: "#fff",
+                    },
+                    ".Input": {
+                        height: "44px",
+                        borderRadius: "6px",
+                        border: "1px solid #e5e7eb",
+                        padding: "10px 16px",
+                    },
+                },
+            },
+        });
 
-            // Extract payment method (if exists and is a card)
-            $pm   = $pi->payment_method;
-            $card = ($pm && $pm->type === 'card') ? $pm->card : null;
+        const component = stripeConnect.create(type);
+        container.appendChild(component);
 
-            $result[] = [
-                'id'           => $pi->id,
-                'trainer_name' => $pi->metadata->trainer_name ?? 'N/A',
-                'session_type' => $pi->metadata->session_type ?? 'packs',
-
-                'purchase_details' => [
-                    'product_name'     => $pi->metadata->product_name ?? 'N/A',
-                    'transaction_date' => date('d M Y', $pi->created),
-                    'payment_status'   => $pi->status,
-                    'amount'           => number_format($amount / 100, 2),
-                    'currency'         => $currency,
-                ],
-
-                'payment_methods' => [
-                    'payment_method' => strtoupper($pm->type ?? 'N/A'),
-                    'card_number'    => $card ? "XXXX XXXX XXXX {$card->last4}" : null,
-                    'expires'        => $card ? "{$card->exp_month}/{$card->exp_year}" : null,
-                ],
-            ];
-        }
-
-        return $result;
-    }
-
-    /**
-     * Create a customer on Stripe for trainer account.
-     *
-     * @param  \Illuminate\Http\Request  $request
-     *
-     */
-    public function createCustomer($request)
-    {
-        // Check if customer already exists in this connected account
-        $existing = $this->stripe->customers->all(
-            ['email' => $request->email],
-            ['stripe_account' => $this->trainer->stripe_account_id]
-        );
-
-        if (empty($existing->data)) {
-            // Create new customer in connected account
-            $customer = $this->stripe->customers->create(
-                [
-                    'email' => $request->email,
-                    'name'  => $request->name,
-                ],
-                ['stripe_account' => $this->trainer->stripe_account_id]
-            );
-
-            // Add stripe_customer_id to UserPortal
-            $portal = UserPortal::find($request->trainer_id);
-            if ($portal) {
-                $portal->stripe_customer_id = $customer->id;
-                $portal->save();
+        // Function to hide loader when iframe loads
+        const hideLoader = (iframe) => {
+            if (!iframe) return;
+            if (iframe.complete) {
+                if (loader) loader.style.display = "none";
+                return;
             }
+            iframe.addEventListener("load", () => {
+                if (loader) loader.style.display = "none";
+            });
+        };
 
-            return $customer;
+        // Check first iframe immediately
+        const iframe = container.querySelector("iframe");
+        if (iframe) {
+            hideLoader(iframe);
         } else {
-            return $existing->data[0];
+            // Fallback: observe DOM mutations for dynamically added iframe
+            const observer = new MutationObserver((mutations, obs) => {
+                const iframe = container.querySelector("iframe");
+                if (iframe) {
+                    hideLoader(iframe);
+                    obs.disconnect();
+                }
+            });
+            observer.observe(container, { childList: true, subtree: true });
         }
+    } catch (error) {
+        console.error("Stripe Dashboard error:", error);
+        if (loader) loader.style.display = "none";
     }
+};
 
-    /**
-     * Create a Stripe PaymentIntent for a trainer’s connected account.
-     *
-     * @param  \Illuminate\Http\Request  $request
-     *
-     * @return \Stripe\PaymentIntent
-     *
-     * @throws \Exception
-     */
-    public function createPaymentIntent($request)
-    {
-        // Fetch trainer from another database connection
-        $request['trainer_name'] = !empty($this->trainer) ?  $this->trainer->first_name . ' ' .  $this->trainer->last_name : null;
-        $request['stripe_account_id'] = !empty($this->trainer) ? $this->trainer->stripe_account_id : null;
+/**
+ * Initialize all Stripe dashboards on the page
+ * Supports multiple containers with data-settings
+ */
+function initStripeDashboards() {
+    const containers = document.querySelectorAll("[data-settings]");
 
-        // Create a PaymentIntent on the trainer's connected account
-        // The client_secret is used by PaymentSheet to confirm payment
-        $paymentIntent = $this->stripe->paymentIntents->create(
-            [
-                'amount'    => (int) ($request->amount * 100),
-                'currency'  => $request->currency,
-                'customer'  => $request->customer_id,
-                'automatic_payment_methods' => ['enabled' => true],
-                /*'payment_method' => 'pm_card_visa',
-                'off_session' => true,
-                'confirm' => true,*/
-                'metadata' => [
-                    'trainer_name' => $request->trainer_name,
-                    'session_type' => $request->session_type,
-                    'product_name' => $request->product_name
-                ]
-            ],
-            ['stripe_account' => $this->trainer->stripe_account_id]
-        );
-
-        return $paymentIntent;
-    }
+    containers.forEach((container) => {
+        try {
+            const settings = JSON.parse(container.dataset.settings);
+            window.mountStripeDashboard(settings);
+        } catch (err) {
+            console.error("Error parsing Stripe dashboard settings:", err);
+        }
+    });
 }
 
-
-
-
-Please avoid sending the entire request instance to the service class (it's okay for the controller helper method) as this method then becomes tightly coupled with the controller. If later on we want to use this in jobs, the request instance will not be available, making it harder.
+// Initialize on DOMContentLoaded
+document.addEventListener("DOMContentLoaded", initStripeDashboards);
