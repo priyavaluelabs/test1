@@ -1,8 +1,5 @@
 import { loadConnectAndInitialize } from "@stripe/connect-js";
 
-/**
- * Mount a single Stripe Dashboard component
- */
 window.mountStripeDashboard = async function ({
     publishableKey,
     clientSecret,
@@ -18,7 +15,8 @@ window.mountStripeDashboard = async function ({
         return;
     }
 
-    container.innerHTML = ""; // Clear previous component
+    // Reset UI
+    container.innerHTML = "";
     if (loader) loader.style.display = "flex";
 
     try {
@@ -28,36 +26,10 @@ window.mountStripeDashboard = async function ({
             appearance: {
                 theme: "stripe",
                 overlays: "dialog",
-
                 variables: {
                     colorPrimary: "#b6111c",
                     borderRadius: "8px",
                     spacingUnit: "10px",
-                    fontWeightMedium: "600",
-                    buttonPaddingY: "10px",
-                    buttonPaddingX: "16px",
-                    colorText: "#111827",
-                    colorBackground: "#ffffff",
-                    colorBorder: "#e5e7eb",
-                },
-
-                rules: {
-                    ".Button": {
-                        height: "44px",
-                        lineHeight: "44px",
-                        borderRadius: "8px",
-                        border: "1px solid #e5e7eb",
-                    },
-                    ".Button--primary": {
-                        backgroundColor: "#b6111c",
-                        color: "#fff",
-                    },
-                    ".Input": {
-                        height: "44px",
-                        borderRadius: "6px",
-                        border: "1px solid #e5e7eb",
-                        padding: "10px 16px",
-                    },
                 },
             },
         });
@@ -65,55 +37,46 @@ window.mountStripeDashboard = async function ({
         const component = stripeConnect.create(type);
         container.appendChild(component);
 
-        // Function to hide loader when iframe loads
-        const hideLoader = (iframe) => {
-            if (!iframe) return;
-            if (iframe.complete) {
-                if (loader) loader.style.display = "none";
-                return;
+        /**
+         * Hide loader once iframe loads
+         */
+        const waitForIframeLoad = () => {
+            const iframe = container.querySelector("iframe");
+
+            if (iframe) {
+                iframe.addEventListener("load", () => {
+                    if (loader) loader.style.display = "none";
+                });
+
+                // Safety: iframe might already be loaded
+                if (iframe.complete) {
+                    if (loader) loader.style.display = "none";
+                }
+
+                return true;
             }
-            iframe.addEventListener("load", () => {
-                if (loader) loader.style.display = "none";
-            });
+            return false;
         };
 
-        // Check first iframe immediately
-        const iframe = container.querySelector("iframe");
-        if (iframe) {
-            hideLoader(iframe);
-        } else {
-            // Fallback: observe DOM mutations for dynamically added iframe
-            const observer = new MutationObserver((mutations, obs) => {
-                const iframe = container.querySelector("iframe");
-                if (iframe) {
-                    hideLoader(iframe);
-                    obs.disconnect();
+        // Try immediately
+        if (!waitForIframeLoad()) {
+            // Observe DOM until iframe appears
+            const observer = new MutationObserver(() => {
+                if (waitForIframeLoad()) {
+                    observer.disconnect();
                 }
             });
+
             observer.observe(container, { childList: true, subtree: true });
+
+            // ⛑️ Fallback timeout (important!)
+            setTimeout(() => {
+                observer.disconnect();
+                if (loader) loader.style.display = "none";
+            }, 15000);
         }
     } catch (error) {
         console.error("Stripe Dashboard error:", error);
         if (loader) loader.style.display = "none";
     }
 };
-
-/**
- * Initialize all Stripe dashboards on the page
- * Supports multiple containers with data-settings
- */
-function initStripeDashboards() {
-    const containers = document.querySelectorAll("[data-settings]");
-
-    containers.forEach((container) => {
-        try {
-            const settings = JSON.parse(container.dataset.settings);
-            window.mountStripeDashboard(settings);
-        } catch (err) {
-            console.error("Error parsing Stripe dashboard settings:", err);
-        }
-    });
-}
-
-// Initialize on DOMContentLoaded
-document.addEventListener("DOMContentLoaded", initStripeDashboards);
