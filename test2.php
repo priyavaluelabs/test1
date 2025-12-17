@@ -2,111 +2,100 @@
 
 namespace Klyp\Nomergy\Services\Stripe;
 
+use Illuminate\Support\Collection;
 use Klyp\Nomergy\Models\FodUserRole;
-use Klyp\Nomergy\Models\UserPortal;
 use Klyp\Nomergy\Models\PTBillingUserTrainer;
+use Klyp\Nomergy\Models\UserPortal;
 
 class PTBillingStripeTrainerService
 {
+    private const DEFAULT_TRAINER_IMAGE =
+        'https://cdn.glofox.com/platform/liftcrmdemobff/branches/65b0ff5177129a7f7a049ec7/trainers/693815351a4a0899b709bb27/default.png?v=1765282952';
+
     /**
-     * Get all trainers available for a club.
-     *
-     * @param int $clubId
-     * @return array
+     * Get all onboarded trainers available for a club.
      */
-    public function getTrainersByClub(int $clubId): array
+    public function getTrainersForClub(int $clubId): array
     {
-        $portalUserIds = FodUserRole::where('club_id', $clubId)
-            ->distinct()
-            ->pluck('user_id')
-            ->toArray();
+        $trainerIds = $this->getTrainerIdsForClub($clubId);
 
-        if (empty($portalUserIds)) {
-            return [];
-        }
-
-        return $this->fetchAndFormatTrainers($portalUserIds);
+        return $this->resolveTrainersByIds($trainerIds);
     }
 
     /**
-     * Get all trainer ids available for a club.
-     *
-     * @param int $clubId
-     * @return array
+     * Get trainer IDs associated with a club.
      */
-    public function getTrainerIdsByClub(int $clubId): array
+    public function getTrainerIdsForClub(int $clubId): array
     {
-        $portalUserIds = FodUserRole::where('club_id', $clubId)
+        return FodUserRole::query()
+            ->where('club_id', $clubId)
             ->distinct()
             ->pluck('user_id')
             ->toArray();
-
-        if (empty($portalUserIds)) {
-            return [];
-        }
-
-        return $portalUserIds;
     }
 
     /**
-     * Get trainers assigned to a specific user.
-     *
-     * @param int $userId
-     * @return array
+     * Get trainers assigned to a specific customer.
      */
-    public function getAssignedTrainersByUser(int $userId): array
+    public function getAssignedTrainersForUser(int $userId): array
     {
-        $trainerIds = PTBillingUserTrainer::where('user_id', $userId)
+        $trainerIds = PTBillingUserTrainer::query()
+            ->where('user_id', $userId)
             ->whereNull('deleted_at')
             ->distinct()
             ->pluck('trainer_id')
             ->toArray();
 
-        if (empty($trainerIds)) {
+        return $this->resolveTrainersByIds($trainerIds);
+    }
+
+    /**
+     * Resolve trainer records and format for API response.
+     */
+    private function resolveTrainersByIds(array $trainerIds): array
+    {
+        if ($trainerIds === []) {
             return [];
         }
 
-        return $this->fetchAndFormatTrainers($trainerIds);
+        $trainers = $this->fetchOnboardedTrainers($trainerIds);
+
+        return $this->mapTrainersForResponse($trainers);
     }
 
     /**
-     * Fetch trainers from portal and format them.
-     *
-     * @param array $trainerIds
-     * @return array
+     * Fetch onboarded trainers from portal.
      */
-    private function fetchAndFormatTrainers(array $trainerIds): array
+    private function fetchOnboardedTrainers(array $trainerIds): Collection
     {
-        $trainers = UserPortal::whereIn('id', $trainerIds)
-            ->where('is_onboarded', 1)
-            ->select('id', 'first_name', 'last_name', 'email')
+        return UserPortal::query()
+            ->whereIn('id', $trainerIds)
+            ->where('is_onboarded', true)
+            ->select(['id', 'first_name', 'last_name', 'email'])
             ->get();
-
-        return $this->formatPortalUsers($trainers);
     }
 
     /**
-     * Map portal users into simplified array structure used by the API.
-     *
-     * @param \Illuminate\Support\Collection $users
-     * @return array
+     * Map trainer models into API response structure.
      */
-    private function formatPortalUsers($users): array
+    private function mapTrainersForResponse(Collection $trainers): array
     {
-        return $users->map(function ($u) {
-            return [
-                'id' => $u->id,
-                'name' => trim(($u->first_name ?? '') . ' ' . ($u->last_name ?? '')),
-                'email' => $u->email,
-                'image_url' => 'https://cdn.glofox.com/platform/liftcrmdemobff/branches/65b0ff5177129a7f7a049ec7/trainers/693815351a4a0899b709bb27/default.png?v=1765282952'
-            ];
-        })->values()->all();
+        return $trainers
+            ->map(fn (UserPortal $trainer) => [
+                'id'         => $trainer->id,
+                'name'       => trim("{$trainer->first_name} {$trainer->last_name}"),
+                'email'      => $trainer->email,
+                'image_url'  => self::DEFAULT_TRAINER_IMAGE,
+            ])
+            ->values()
+            ->all();
     }
 }
 
 
-=======================
 
+
+===========
 
 <?php
 
@@ -115,81 +104,74 @@ namespace Klyp\Nomergy\Http\Controllers\Stripe;
 use Klyp\Nomergy\Http\Controllers\ApiController;
 use Klyp\Nomergy\Services\Stripe\PTBillingStripeTrainerService;
 use Symfony\Component\HttpFoundation\Response;
+use Throwable;
 
 class ApiPTBillingStripeCustomerTrainerController extends ApiController
 {
-    /**
-     * Trainer service for fetching and formatting trainer data.
-     *
-     * @var PTBillingStripeTrainerService
-     */
-    protected $trainerService;
+    public function __construct(
+        protected PTBillingStripeTrainerService $trainerService
+    ) {}
 
     /**
-     * Constructor to inject the trainer service.
-     *
-     * @param PTBillingStripeTrainerService $trainerService
+     * Return all trainers available for the customer's club.
      */
-    public function __construct(PTBillingStripeTrainerService $trainerService)
-    {
-        $this->trainerService = $trainerService;
-    }
-    /**
-     * Retrieve a list of trainer of customer.
-     *
-     * @return \Illuminate\Http\JsonResponse
-     *
-     */
-    public function getTrainerListByCustomer()
+    public function getClubTrainers()
     {
         $user = parent::getAuth();
 
-        $clubId = $user->profile_club_id;
-        
-        if (empty($clubId)) {
-            return parent::respondError(__('klyp.nomergy::fod.user_has_no_club'), Response::HTTP_BAD_REQUEST);
+        if (! $user->profile_club_id) {
+            return parent::respondError(
+                __('klyp.nomergy::fod.user_has_no_club'),
+                Response::HTTP_BAD_REQUEST
+            );
         }
 
         try {
-            $trainers = $this->trainerService->getTrainersByClub($clubId);
-
-            return parent::respond([
-                'status' => 'success',
-                'trainers' => $trainers,
-                'club' => $user->profile_club_title
-            ], Response::HTTP_OK);
-
-        } catch (\Exception $e) {
-            return parent::respondError(__('klyp.nomergy::fod.user_has_no_trainer_list'), Response::HTTP_INTERNAL_SERVER_ERROR);
+            return $this->respondSuccess([
+                'club'     => $user->profile_club_title,
+                'trainers' => $this->trainerService
+                    ->getTrainersForClub($user->profile_club_id),
+            ]);
+        } catch (Throwable) {
+            return parent::respondError(
+                __('klyp.nomergy::fod.user_has_no_trainer_list'),
+                Response::HTTP_INTERNAL_SERVER_ERROR
+            );
         }
-
     }
 
-
     /**
-     * Retrieve a assigned list of trainer of customer.
-     *
-     * @return \Illuminate\Http\JsonResponse
-     *
+     * Return trainers assigned to the customer.
      */
-    public function getAssignedTrainerListByCustomer()
+    public function getAssignedTrainers()
     {
         $user = parent::getAuth();
 
-        if (empty($user->id)) {
-            return parent::respondError(__('klyp.nomergy::fod.user_not_found'), Response::HTTP_BAD_REQUEST);
+        if (! $user->id) {
+            return parent::respondError(
+                __('klyp.nomergy::fod.user_not_found'),
+                Response::HTTP_BAD_REQUEST
+            );
         }
 
         try {
-            $trainers = $this->trainerService->getAssignedTrainersByUser($user->id);
-
-            return parent::respond([
-                'status' => 'success',
-                'trainers' => $trainers
-            ], Response::HTTP_OK);
-
-        } catch (\Exception $e) {
-            return parent::respondError(__('klyp.nomergy::fod.user_has_no_trainer_list'), Response::HTTP_INTERNAL_SERVER_ERROR);
+            return $this->respondSuccess([
+                'trainers' => $this->trainerService
+                    ->getAssignedTrainersForUser($user->id),
+            ]);
+        } catch (Throwable) {
+            return parent::respondError(
+                __('klyp.nomergy::fod.user_has_no_trainer_list'),
+                Response::HTTP_INTERNAL_SERVER_ERROR
+            );
         }
+    }
+
+    private function respondSuccess(array $payload)
+    {
+        return parent::respond(
+            array_merge(['status' => 'success'], $payload),
+            Response::HTTP_OK
+        );
     }
 }
