@@ -19,6 +19,8 @@ window.mountStripeDashboard = async function ({
     container.innerHTML = "";
     if (loader) loader.style.display = "flex";
 
+    const initialHeight = container.offsetHeight;
+
     try {
         const stripeConnect = await loadConnectAndInitialize({
             publishableKey,
@@ -38,43 +40,31 @@ window.mountStripeDashboard = async function ({
         container.appendChild(component);
 
         /**
-         * Hide loader once iframe loads
+         * Hide loader when container height increases
          */
-        const waitForIframeLoad = () => {
-            const iframe = container.querySelector("iframe");
-
-            if (iframe) {
-                iframe.addEventListener("load", () => {
-                    if (loader) loader.style.display = "none";
-                });
-
-                // Safety: iframe might already be loaded
-                if (iframe.complete) {
-                    if (loader) loader.style.display = "none";
-                }
-
-                return true;
-            }
-            return false;
+        const hideLoader = () => {
+            if (loader) loader.style.display = "none";
         };
 
-        // Try immediately
-        if (!waitForIframeLoad()) {
-            // Observe DOM until iframe appears
-            const observer = new MutationObserver(() => {
-                if (waitForIframeLoad()) {
-                    observer.disconnect();
+        const resizeObserver = new ResizeObserver(entries => {
+            for (const entry of entries) {
+                const newHeight = entry.contentRect.height;
+
+                if (newHeight > initialHeight + 50) {
+                    hideLoader();
+                    resizeObserver.disconnect();
                 }
-            });
+            }
+        });
 
-            observer.observe(container, { childList: true, subtree: true });
+        resizeObserver.observe(container);
 
-            // ⛑️ Fallback timeout (important!)
-            setTimeout(() => {
-                observer.disconnect();
-                if (loader) loader.style.display = "none";
-            }, 15000);
-        }
+        // ⛑️ Safety fallback
+        setTimeout(() => {
+            resizeObserver.disconnect();
+            hideLoader();
+        }, 15000);
+
     } catch (error) {
         console.error("Stripe Dashboard error:", error);
         if (loader) loader.style.display = "none";
