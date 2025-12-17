@@ -67,10 +67,6 @@ class ApiPTBillingStripeProductController extends ApiController
         try {
             $trainer = UserPortal::find($trainerId);
             if (!$trainer || !$trainer->stripe_account_id || !$trainer->is_onboarded ) {
-                $this->logger->warning("products.fetch.invalid_trainer", __('klyp.nomergy::fod.trainer_not_in_stripe'), [
-                    'trainer_id' => $trainerId], $user->id ?? null);
-                $this->logger->flush();
-
                 return parent::respondError(__('klyp.nomergy::fod.trainer_not_in_stripe'),Response::HTTP_BAD_REQUEST);
             }
 
@@ -81,29 +77,23 @@ class ApiPTBillingStripeProductController extends ApiController
 
             $trainers = $this->trainerService->getTrainerIdsForClub($clubId);
             if (! in_array($trainerId, $trainers)) {
-                $this->logger->warning("products.fetch.invalid_trainer", __('klyp.nomergy::fod.trainer_having_different_club_as_login_user'), [
-                    'trainer_id' => $trainerId], $user->id ?? null);
-                $this->logger->flush();
-
                 return parent::respondError(__('klyp.nomergy::fod.trainer_having_different_club_as_login_user'),Response::HTTP_BAD_REQUEST);
             }
 
-            $terms = !empty($trainer->billing_setting->terms) ? $trainer->billing_setting->terms : null;
-
             $products = $this->stripeProductService->getActiveProductsWithDefaultPrice($trainer->stripe_account_id, $trainer->corp_partner_id);
+            $trainerPayload = [
+                'name' => $trainer->first_name . ' ' . $trainer->last_name,
+                'email' => $trainer->email,
+                'image_url' => 'https://cdn.glofox.com/platform/liftcrmdemobff/branches/65b0ff5177129a7f7a049ec7/trainers/693815351a4a0899b709bb27/default.png?v=1765282952',
+                'terms' => !empty($trainer->billing_setting->terms) ? $trainer->billing_setting->terms : null,
+            ];
+
             $this->logger->info("products.fetch.success", __('klyp.nomergy::fod.fetching_trainer_product'), [
                 'trainer_id'    => $trainerId,
                 'product_count' => count($products)
             ], $user->id ?? null);
             $this->logger->flush();
-
-            $trainerPayload = [
-                'name' => $trainer->first_name . ' ' . $trainer->last_name,
-                'email' => $trainer->email,
-                'image_url' => 'https://cdn.glofox.com/platform/liftcrmdemobff/branches/65b0ff5177129a7f7a049ec7/trainers/693815351a4a0899b709bb27/default.png?v=1765282952',
-                'terms' => $terms,
-            ];
-
+            
             return parent::respond(['status' => 'success',
                 'products' => $products,
                 'trainer' => $trainerPayload
