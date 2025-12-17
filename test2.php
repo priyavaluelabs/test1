@@ -1,55 +1,29 @@
-/**
-     * Validate trainer, club, and Stripe eligibility.
-     *
-     * @throws ApplicationException
-     */
-    private function validateTrainerAccess(int $trainerId, ?int $clubId): UserPortal
-    {
-        if (empty($clubId)) {
-            throw new ApplicationException(
-                __('klyp.nomergy::fod.user_has_no_club')
-            );
-        }
+ foreach ($paymentIntents->data as $pi) {
+                // Handle amount: fallback to `amount` if `amount_received` is missing
+                $amount   = $pi->amount_received ?? $pi->amount;
+                $currency = strtoupper($pi->currency);
 
-        $trainer = UserPortal::find($trainerId);
+                $pm   = $pi->payment_method;
+                $card = ($pm && $pm->type === 'card') ? $pm->card : null;
 
-        if (! $trainer) {
-            throw new ApplicationException(
-                __('klyp.nomergy::fod.trainer_not_found')
-            );
-        }
+                $result[] = [
+                    'id'           => $pi->id,
+                    'trainer_name' => $pi->metadata->trainer_name ?? 'N/A',
+                    'product_type' => $pi->metadata->product_type ?? '10 session Packs',
 
-        if (! $trainer->stripe_account_id || ! $trainer->is_onboarded) {
-            throw new ApplicationException(
-                __('klyp.nomergy::fod.trainer_not_in_stripe')
-            );
-        }
+                    'purchase_details' => [
+                        'product_name'     => $pi->metadata->product_name ?? 'N/A',
+                        'transaction_date' => date('M j, Y g:i A', $pi->created),
+                        'payment_status'   => $pi->status,
+                        'amount'           => number_format($amount / 100, 2),
+                        'currency'         => $currency,
+                    ],
 
-        $trainerIds = $this->trainerService
-            ->getTrainerIdsForClub($clubId);
-
-        if (! in_array($trainerId, $trainerIds, true)) {
-            throw new ApplicationException(
-                __('klyp.nomergy::fod.trainer_having_different_club_as_login_user')
-            );
-        }
-
-        return $trainer;
-    }
-
-    private function getDefaultTrainerImage(): string
-    {
-        return 'https://cdn.glofox.com/platform/liftcrmdemobff/branches/65b0ff5177129a7f7a049ec7/trainers/693815351a4a0899b709bb27/default.png?v=1765282952';
-    }
-
-
-     return $this->respond([
-                'status'   => 'success',
-                'products' => $products,
-                'trainer'  => [
-                    'name'      => trim("{$trainer->first_name} {$trainer->last_name}"),
-                    'email'     => $trainer->email,
-                    'image_url' => $this->getDefaultTrainerImage(),
-                    'terms'     => $trainer->billing_setting->terms ?? null,
-                ],
-            ], Response::HTTP_OK);
+                    'payment_methods' => [
+                        'payment_method' => strtoupper($pm->type ?? 'N/A'),
+                        'car_type'       => strtoupper($card->brand ?? 'N/A'),
+                        'card_number'    => $card ? "XXXX XXXX XXXX {$card->last4}" : null,
+                        'expires'        => $card ? "{$card->exp_month}/{$card->exp_year}" : null,
+                    ],
+                ];
+            }
