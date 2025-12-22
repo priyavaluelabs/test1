@@ -6,7 +6,6 @@ use App\Filament\Resources\UserResource\Pages\HasResetPassword;
 use App\Filament\Resources\UserResource;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ViewRecord;
-use Filament\Forms\Components\DatePicker;
 use Illuminate\Support\Carbon;
 
 class ViewUser extends ViewRecord
@@ -17,85 +16,29 @@ class ViewUser extends ViewRecord
     protected static string $view = 'filament.resources.users.view-user';
 
     public $initialEmail = '';
-
-    // =========================
-    // Modal state
-    // =========================
-    public bool $showCheckOffModal = false;
     public ?string $checkOffDate = null;
     public ?int $activePunchCardId = null;
 
-    public bool $showRestoreModal = false;
-    public ?int $restorePunchCardId = null;
-
-    // =========================
-    // Lifecycle
-    // =========================
     public function mount(int|string $record): void
     {
         parent::mount($record);
         $this->initialEmail = $this->record->email;
     }
 
-    protected function mutateFormDataBeforeFill(array $data): array
+    // =========================
+    // Check Off Session
+    // =========================
+    public function submitCheckOffSession(int $punchCardId, string $date): void
     {
-        return $this->traitMutateFormDataBeforeFill($data);
+        $this->checkOffSession($punchCardId, $date);
     }
 
     // =========================
-    // Check Off Session Modal
+    // Restore Session
     // =========================
-    public function openCheckOffModal(int $punchCardId): void
+    public function confirmRestoreSession(int $punchCardId): void
     {
-        $this->activePunchCardId = $punchCardId;
-        $this->checkOffDate = now()->toDateString();
-        $this->showCheckOffModal = true;
-    }
-
-    public function closeCheckOffModal(): void
-    {
-        $this->reset([
-            'showCheckOffModal',
-            'checkOffDate',
-            'activePunchCardId',
-        ]);
-    }
-
-    public function submitCheckOffSession(): void
-    {
-        $this->validate([
-            'checkOffDate' => ['required', 'date'],
-        ]);
-
-        $this->checkOffSession(
-            $this->activePunchCardId,
-            $this->checkOffDate
-        );
-
-        $this->closeCheckOffModal();
-    }
-
-    // =========================
-    // Restore Session Modal
-    // =========================
-    public function openRestoreModal(int $punchCardId): void
-    {
-        $this->restorePunchCardId = $punchCardId;
-        $this->showRestoreModal = true;
-    }
-
-    public function closeRestoreModal(): void
-    {
-        $this->reset([
-            'showRestoreModal',
-            'restorePunchCardId',
-        ]);
-    }
-
-    public function confirmRestoreSession(): void
-    {
-        $this->restoreMostRecentSession($this->restorePunchCardId);
-        $this->closeRestoreModal();
+        $this->restoreMostRecentSession($punchCardId);
     }
 
     // =========================
@@ -104,15 +47,10 @@ class ViewUser extends ViewRecord
     public function checkOffSession(int $punchCardId, string $date): void
     {
         $punchCard = $this->getPunchCardOrNotify($punchCardId);
-        if (! $punchCard) {
-            return;
-        }
+        if (!$punchCard) return;
 
         if ($punchCard->used_session >= $punchCard->total_session) {
-            Notification::make()
-                ->title('No sessions left')
-                ->warning()
-                ->send();
+            Notification::make()->title('No sessions left')->warning()->send();
             return;
         }
 
@@ -124,63 +62,37 @@ class ViewUser extends ViewRecord
             Carbon::parse($date)->setTimeFromTimeString(now()->format('H:i:s'))
         );
 
-        Notification::make()
-            ->title('Session checked off')
-            ->success()
-            ->send();
+        Notification::make()->title('Session checked off')->success()->send();
     }
 
     public function restoreMostRecentSession(int $punchCardId): void
     {
         $punchCard = $this->getPunchCardOrNotify($punchCardId);
-        if (! $punchCard) {
-            return;
-        }
+        if (!$punchCard) return;
 
         if ($punchCard->used_session <= 0) {
-            Notification::make()
-                ->title('No sessions to restore')
-                ->warning()
-                ->send();
+            Notification::make()->title('No sessions to restore')->warning()->send();
             return;
         }
 
         $punchCard->decrement('used_session');
+        $this->addHistory($punchCard, 'Session restored');
 
-        $this->addHistory(
-            $punchCard,
-            'Session restored'
-        );
-
-        Notification::make()
-            ->title('Most recent session restored')
-            ->success()
-            ->send();
+        Notification::make()->title('Most recent session restored')->success()->send();
     }
 
     private function getPunchCardOrNotify(int $punchCardId)
     {
-        $punchCard = $this->record
-            ->trainerBillings()
-            ->whereKey($punchCardId)
-            ->first();
-
-        if (! $punchCard) {
-            Notification::make()
-                ->title('Punch card not found')
-                ->danger()
-                ->send();
+        $punchCard = $this->record->trainerBillings()->whereKey($punchCardId)->first();
+        if (!$punchCard) {
+            Notification::make()->title('Punch card not found')->danger()->send();
             return null;
         }
-
         return $punchCard;
     }
 
-    private function addHistory(
-        $punchCard,
-        string $action,
-        ?Carbon $date = null
-    ): void {
+    private function addHistory($punchCard, string $action, ?Carbon $date = null): void
+    {
         $punchCard->histories()->create([
             'action' => $action,
             'date_of_session' => $date ?? now(),
@@ -189,8 +101,8 @@ class ViewUser extends ViewRecord
     }
 }
 
-=========
 
+=====
 
 
 <h3 class="font-sans font-bold text-xl leading-7 text-gray-950 dark:text-white mb-4">
@@ -214,6 +126,7 @@ class ViewUser extends ViewRecord
                     / {{ $billing->total_session }}
                 </span>
             </div>
+
             <div class="flex items-center gap-1 mt-1">
                 @for ($i = 1; $i <= $billing->total_session; $i++)
                     @if ($i <= $billing->used_session)
@@ -242,47 +155,59 @@ class ViewUser extends ViewRecord
 
             <!-- ACTION BUTTONS -->
             <div class="flex items-center gap-2 pt-3 pb-3">
-                <x-filament::button color="primary" wire:click="openCheckOffModal({{ $billing->id }})">
+                <x-filament::button
+                    color="primary"
+                    x-on:click="$dispatch('open-modal', { id: 'check-off-session-modal-{{ $billing->id }}' })"
+                >
                     Check off session
                 </x-filament::button>
-                <x-filament::button color="gray" wire:click="openRestoreModal({{ $billing->id }})">
+
+                <x-filament::button
+                    color="gray"
+                    x-on:click="$dispatch('open-modal', { id: 'restore-session-modal-{{ $billing->id }}' })"
+                >
                     Restore most recent session
                 </x-filament::button>
             </div>
 
             <div class="w-full border-t border-gray-200 dark:border-gray-700"></div>
+
+            <!-- CHECK OFF SESSION MODAL -->
+            <x-filament::modal id="check-off-session-modal-{{ $billing->id }}" width="sm">
+                <x-slot name="heading">Check off session</x-slot>
+                <div class="space-y-4">
+                    <x-filament::input.wrapper>
+                        <x-filament::input
+                            type="date"
+                            wire:model.defer="checkOffDate"
+                            max="{{ now()->toDateString() }}"
+                        />
+                    </x-filament::input.wrapper>
+                </div>
+                <x-slot name="footer">
+                    <div class="flex justify-end gap-2">
+                        <x-filament::button color="gray" x-on:click="$dispatch('close-modal', { id: 'check-off-session-modal-{{ $billing->id }}' })">Cancel</x-filament::button>
+                        <x-filament::button color="primary" wire:click="submitCheckOffSession({{ $billing->id }}, '{{ now()->toDateString() }}')">Check off</x-filament::button>
+                    </div>
+                </x-slot>
+            </x-filament::modal>
+
+            <!-- RESTORE SESSION MODAL -->
+            <x-filament::modal id="restore-session-modal-{{ $billing->id }}" width="sm">
+                <x-slot name="heading">Restore most recent session</x-slot>
+                <div class="text-sm text-gray-600 dark:text-gray-400">
+                    Are you sure you want to restore the most recently checked-off session? This action cannot be undone.
+                </div>
+                <x-slot name="footer">
+                    <div class="flex justify-end gap-2">
+                        <x-filament::button color="gray" x-on:click="$dispatch('close-modal', { id: 'restore-session-modal-{{ $billing->id }}' })">Cancel</x-filament::button>
+                        <x-filament::button color="danger" wire:click="confirmRestoreSession({{ $billing->id }})">Restore</x-filament::button>
+                    </div>
+                </x-slot>
+            </x-filament::modal>
+
         </div>
     @empty
         <div class="text-sm text-gray-500 dark:text-gray-400">No billing records available.</div>
     @endforelse
 </div>
-
-<!-- CHECK OFF SESSION MODAL -->
-<x-filament::modal id="check-off-session-modal" width="sm" :visible="$showCheckOffModal" wire:key="check-off-session-modal">
-    <x-slot name="heading">Check off session</x-slot>
-    <div class="space-y-4">
-        <x-filament::input.wrapper>
-            <x-filament::input type="date" wire:model.defer="checkOffDate" max="{{ now()->toDateString() }}" />
-        </x-filament::input.wrapper>
-    </div>
-    <x-slot name="footer">
-        <div class="flex justify-end gap-2">
-            <x-filament::button color="gray" wire:click="closeCheckOffModal">Cancel</x-filament::button>
-            <x-filament::button color="primary" wire:click="submitCheckOffSession">Check off</x-filament::button>
-        </div>
-    </x-slot>
-</x-filament::modal>
-
-<!-- RESTORE SESSION MODAL -->
-<x-filament::modal id="restore-session-modal" width="sm" :visible="$showRestoreModal" wire:key="restore-session-modal">
-    <x-slot name="heading">Restore most recent session</x-slot>
-    <div class="text-sm text-gray-600 dark:text-gray-400">
-        Are you sure you want to restore the most recently checked-off session? This action cannot be undone.
-    </div>
-    <x-slot name="footer">
-        <div class="flex justify-end gap-2">
-            <x-filament::button color="gray" wire:click="closeRestoreModal">Cancel</x-filament::button>
-            <x-filament::button color="danger" wire:click="confirmRestoreSession">Restore</x-filament::button>
-        </div>
-    </x-slot>
-</x-filament::modal>
