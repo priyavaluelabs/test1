@@ -72,11 +72,21 @@
     <!-- Check Off Session Modal -->
     <x-filament::modal id="check-off-session-modal" width="sm">
         <x-slot name="heading">Check off session</x-slot>
-        <div class="space-y-4">
+         <div class="space-y-3">
             <x-filament::input.wrapper>
-                <x-filament::input type="date" wire:model.defer="checkOffDate" max="{{ now()->toDateString() }}" />
+                <x-filament::input
+                    type="date"
+                    wire:model.defer="checkOffDate"
+                    max="{{ now()->toDateString() }}"
+                />
             </x-filament::input.wrapper>
+            @if ($errors->has('checkOffDate'))
+                <p class="mt-1 text-sm text-danger-600 dark:text-danger-400">
+                    {{ $errors->first('checkOffDate') }}
+                </p>
+            @endif
         </div>
+
         <x-slot name="footer">
             <div class="flex justify-end gap-2">
                 <x-filament::button
@@ -121,157 +131,22 @@
 </div>
 
 
-===============================
+font-family: DM Sans;
+font-weight: 500;
+font-style: Medium;
+font-size: 14px;
+leading-trim: NONE;
+line-height: 16px;
+letter-spacing: 0%;
+vertical-align: middle;
 
 
-<?php
 
-namespace App\Filament\Resources\UserResource\Pages;
-
-use App\Filament\Resources\UserResource;
-use App\Filament\Resources\UserResource\Pages\HasResetPassword;
-use Filament\Notifications\Notification;
-use Filament\Resources\Pages\ViewRecord;
-use Illuminate\Support\Carbon;
-
-class ViewUser extends ViewRecord
-{
-    use MutateBeforeFills, HasResetPassword;
-
-    protected static string $resource = UserResource::class;
-    protected static string $view = 'filament.resources.users.view-user';
-
-    public $checkOffDate;
-    public $selectedBillingId;
-    public $initialEmail = '';
-
-    public function mount(int|string $record): void
-    {
-        parent::mount($record);
-
-        $this->initialEmail = $this->record->email;
-    }
-
-    protected function mutateFormDataBeforeFill(array $data): array
-    {
-        return $this->traitMutateFormDataBeforeFill($data);
-    }
-
-    protected function getHeaderActions(): array
-    {
-        return [
-            //
-        ];
-    }
-
-    /**
-     * @return array<Action>
-     */
-    public function getFormActions(): array
-    {
-        return [
-            $this->getResetPasswordAction(),
-        ];
-    }
-
-    public function openCheckOffSessionModal(int $billingId): void
-    {
-        $this->setBillingId($billingId);
-        $this->dispatch('open-modal', id: 'check-off-session-modal');
-    }
-
-    public function openRestoreSessionModal(int $billingId): void
-    {
-        $this->setBillingId($billingId);
-        $this->dispatch('open-modal', id: 'restore-session-modal');
-    }
-
-    // Check off session
-    public function submitCheckOffSession()
-    {
-        $date = $this->checkOffDate ?? now()->toDateString();
-        $punchCard = $this->getPunchCardOrNotify($this->selectedBillingId);
-        if (!$punchCard) return;
-
-        if ($punchCard->used_session >= $punchCard->total_session) {
-            Notification::make()
-                ->title('No sessions left')
-                ->warning()
-                ->send();
-            return;
-        }
-
-        $punchCard->increment('used_session');
-
-        $this->addHistory(
-            $punchCard,
-            'Session checked off',
-            Carbon::parse($date)->setTimeFromTimeString(now()->format('H:i:s'))
-        );
-
-        Notification::make()
-            ->title('Session checked off')
-            ->success()
-            ->send();
-
-        // Close modal after submit
-        $this->checkOffDate = '';
-        $this->dispatch('close-modal', id: 'check-off-session-modal');
-    }
-
-    // Restore most recent session
-    public function confirmRestoreSession(): void
-    {
-        $punchCard = $this->getPunchCardOrNotify($this->selectedBillingId);
-        if (!$punchCard || $punchCard->used_session <= 0) {
-            Notification::make()
-                ->title('No sessions to restore')
-                ->warning()
-                ->send();
-            return;
-        }
-
-        $punchCard->decrement('used_session');
-
-        // Add history with last session date
-        $lastHistory = $punchCard->histories()->latest('date_of_session')->first();
-        $historyDate = $lastHistory?->date_of_session ?? now();
-
-        $this->addHistory($punchCard, 'Session restored', Carbon::parse($historyDate));
-
-        Notification::make()
-            ->title('Most recent session restored')
-            ->success()
-            ->send();
-        
-        // Close modal after submit
-        $this->dispatch('close-modal', id: 'restore-session-modal');
-    }
-
-    private function getPunchCardOrNotify(int $punchCardId)
-    {
-        $punchCard = $this->record->trainerBillings()->whereKey($punchCardId)->first();
-        if (!$punchCard) {
-            Notification::make()
-                ->title('Punch card not found')
-                ->danger()
-                ->send();
-            return null;
-        }
-        return $punchCard;
-    }
-
-    private function addHistory($punchCard, string $action, ?Carbon $date = null): void
-    {
-        $punchCard->histories()->create([
-            'action' => $action,
-            'date_of_session' => $date ?? now(),
-            'punch_card_id' => $punchCard->id,
-        ]);
-    }
-
-    private function setBillingId(int $billingId)
-    {
-        $this->selectedBillingId  = $billingId;
-    }
-}
+font-family: DM Sans;
+font-weight: 700;
+font-style: Bold;
+font-size: 14px;
+leading-trim: NONE;
+line-height: 16px;
+letter-spacing: 0%;
+vertical-align: middle;
