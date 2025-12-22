@@ -119,3 +119,140 @@
         <div class="text-sm text-gray-500 dark:text-gray-400">No billing records available.</div>
     @endforelse
 </div>
+
+
+===================================
+
+
+<?php
+
+namespace App\Filament\Resources\UserResource\Pages;
+
+use App\Filament\Resources\UserResource;
+use App\Filament\Resources\UserResource\Pages\HasResetPassword;
+use Filament\Notifications\Notification;
+use Filament\Resources\Pages\ViewRecord;
+use Illuminate\Support\Carbon;
+
+class ViewUser extends ViewRecord
+{
+    use MutateBeforeFills, HasResetPassword;
+
+    protected static string $resource = UserResource::class;
+    protected static string $view = 'filament.resources.users.view-user';
+
+    public $checkOffDate;
+    public $initialEmail = '';
+
+    public function mount(int|string $record): void
+    {
+        parent::mount($record);
+
+        $this->initialEmail = $this->record->email;
+    }
+
+    protected function mutateFormDataBeforeFill(array $data): array
+    {
+        return $this->traitMutateFormDataBeforeFill($data);
+    }
+
+    protected function getHeaderActions(): array
+    {
+        return [
+            //
+        ];
+    }
+
+    /**
+     * @return array<Action>
+     */
+    public function getFormActions(): array
+    {
+        return [
+            $this->getResetPasswordAction(),
+        ];
+    }
+
+    // Check off session
+    public function submitCheckOffSession(int $punchCardId): void
+    {
+        $date = $this->checkOffDate ?? now()->toDateString();
+        $punchCard = $this->getPunchCardOrNotify($punchCardId);
+        if (!$punchCard) return;
+
+        if ($punchCard->used_session >= $punchCard->total_session) {
+            Notification::make()
+                ->title('No sessions left')
+                ->warning()
+                ->send();
+            return;
+        }
+
+        $punchCard->increment('used_session');
+
+        $this->addHistory(
+            $punchCard,
+            'Session checked off',
+            Carbon::parse($date)->setTimeFromTimeString(now()->format('H:i:s'))
+        );
+
+        Notification::make()
+            ->title('Session checked off')
+            ->success()
+            ->send();
+
+        // Close modal after submit
+        $this->checkOffDate = '';
+    }
+
+    // Restore most recent session
+    public function confirmRestoreSession(int $punchCardId): void
+    {
+        $punchCard = $this->getPunchCardOrNotify($punchCardId);
+        if (!$punchCard || $punchCard->used_session <= 0) {
+            Notification::make()
+                ->title('No sessions to restore')
+                ->warning()
+                ->send();
+            return;
+        }
+
+        $punchCard->decrement('used_session');
+
+        // Add history with last session date
+        $lastHistory = $punchCard->histories()->latest('date_of_session')->first();
+        $historyDate = $lastHistory?->date_of_session ?? now();
+
+        $this->addHistory($punchCard, 'Session restored', Carbon::parse($historyDate));
+
+        Notification::make()
+            ->title('Most recent session restored')
+            ->success()
+            ->send();
+        
+        // Close modal after submit
+        $this->checkOffDate = '';
+    }
+
+    private function getPunchCardOrNotify(int $punchCardId)
+    {
+        $punchCard = $this->record->trainerBillings()->whereKey($punchCardId)->first();
+        if (!$punchCard) {
+            Notification::make()
+                ->title('Punch card not found')
+                ->danger()
+                ->send();
+            return null;
+        }
+        return $punchCard;
+    }
+
+    private function addHistory($punchCard, string $action, ?Carbon $date = null): void
+    {
+        $punchCard->histories()->create([
+            'action' => $action,
+            'date_of_session' => $date ?? now(),
+            'punch_card_id' => $punchCard->id,
+        ]);
+    }
+}
