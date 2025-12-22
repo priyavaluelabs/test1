@@ -186,11 +186,6 @@ class ViewUser extends ViewRecord
         $this->dispatch('open-modal', id: 'restore-session-modal');
     }
 
-    private function setBillingId(int $billingId)
-    {
-        $this->selectedBillingId  = $billingId;
-    }
-
     // Check off session
     public function submitCheckOffSession()
     {
@@ -250,7 +245,6 @@ class ViewUser extends ViewRecord
             ->send();
         
         // Close modal after submit
-        $this->checkOffDate = '';
         $this->dispatch('close-modal', id: 'restore-session-modal');
     }
 
@@ -274,5 +268,10 @@ class ViewUser extends ViewRecord
             'date_of_session' => $date ?? now(),
             'punch_card_id' => $punchCard->id,
         ]);
+    }
+
+    private function setBillingId(int $billingId)
+    {
+        $this->selectedBillingId  = $billingId;
     }
 }
