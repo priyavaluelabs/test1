@@ -25,25 +25,19 @@ class ViewUser extends ViewRecord
         $this->initialEmail = $this->record->email;
     }
 
-    // =========================
     // Check Off Session
-    // =========================
     public function submitCheckOffSession(int $punchCardId, string $date): void
     {
         $this->checkOffSession($punchCardId, $date);
     }
 
-    // =========================
     // Restore Session
-    // =========================
     public function confirmRestoreSession(int $punchCardId): void
     {
         $this->restoreMostRecentSession($punchCardId);
     }
 
-    // =========================
     // Business Logic
-    // =========================
     public function checkOffSession(int $punchCardId, string $date): void
     {
         $punchCard = $this->getPunchCardOrNotify($punchCardId);
