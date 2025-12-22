@@ -1,72 +1,258 @@
-import { loadConnectAndInitialize } from "@stripe/connect-js";
+<?php
 
-window.mountStripeDashboard = async function ({
-    publishableKey,
-    clientSecret,
-    type,
-    containerId,
-    loaderId
-}) {
-    const container = document.getElementById(containerId);
-    const loader = document.getElementById(loaderId);
+namespace App\Filament\Resources\UserResource\Pages;
 
-    if (!container) {
-        console.error("Stripe container not found:", containerId);
-        return;
+use App\Filament\Resources\UserResource\Pages\HasResetPassword;
+use App\Filament\Resources\UserResource;
+use Filament\Notifications\Notification;
+use Filament\Resources\Pages\ViewRecord;
+use Filament\Forms\Components\DatePicker;
+use Illuminate\Support\Carbon;
+use Filament\Actions\Action;
+
+class ViewUser extends ViewRecord
+{
+    use MutateBeforeFills, HasResetPassword;
+
+    protected static string $resource = UserResource::class;
+    protected static string $view = 'filament.resources.users.view-user';
+
+    public $initialEmail = '';
+
+    public function mount(int|string $record): void
+    {
+        parent::mount($record);
+
+        $this->initialEmail = $this->record->email;
     }
 
-    // Reset UI
-    container.innerHTML = "";
-    if (loader) loader.style.display = "flex";
-
-    const initialHeight = container.offsetHeight;
-
-    try {
-        const stripeConnect = await loadConnectAndInitialize({
-            publishableKey,
-            fetchClientSecret: async () => clientSecret,
-            appearance: {
-                theme: "stripe",
-                overlays: "dialog",
-                variables: {
-                    colorPrimary: "#b6111c",
-                    borderRadius: "8px",
-                    spacingUnit: "10px",
-                },
-            },
-        });
-
-        const component = stripeConnect.create(type);
-        container.appendChild(component);
-
-        /**
-         * Hide loader when container height increases
-         */
-        const hideLoader = () => {
-            if (loader) loader.style.display = "none";
-        };
-
-        const resizeObserver = new ResizeObserver(entries => {
-            for (const entry of entries) {
-                const newHeight = entry.contentRect.height;
-
-                if (newHeight > initialHeight + 50) {
-                    hideLoader();
-                    resizeObserver.disconnect();
-                }
-            }
-        });
-
-        resizeObserver.observe(container);
-
-        // ⛑️ Safety fallback
-        setTimeout(() => {
-            resizeObserver.disconnect();
-            hideLoader();
-        }, 15000);
-
-    } catch (error) {
-        console.error("Stripe Dashboard error:", error);
-        if (loader) loader.style.display = "none";
+    protected function mutateFormDataBeforeFill(array $data): array
+    {
+        return $this->traitMutateFormDataBeforeFill($data);
     }
-};
+
+    protected function getActions(): array
+    {
+        return [
+            Action::make('checkOffSession')
+                ->label('Check off session')
+                ->modalHeading('Check off session')
+                ->modalWidth('sm') 
+                ->modalSubmitActionLabel('Check off')
+                ->modalCancelActionLabel('Cancel')
+                ->form([
+                    DatePicker::make('date')
+                        ->label('Date of session')
+                        ->required()
+                        ->maxDate(now()),
+                ])
+                ->action(function (array $data, array $arguments) {
+                    $this->checkOffSession(
+                        $arguments['punchCardId'],
+                        $data['date']
+                    );
+                }),
+
+            Action::make('restoreMostRecentSession')
+                ->label('Restore most recent session')
+                ->requiresConfirmation()
+                ->color('gray')
+                ->action(function (array $arguments) {
+                    $this->restoreMostRecentSession($arguments['punchCardId']);
+                }),
+        ];
+    }
+
+    /**
+     * @return array<Action>
+     */
+    public function getFormActions(): array
+    {
+        return [
+            $this->getResetPasswordAction(),
+        ];
+    }
+
+    public function checkOffSession(int $punchCardId, string $date): void
+    {
+        $punchCard = $this->getPunchCardOrNotify($punchCardId);
+        if (! $punchCard) {
+            return;
+        }
+
+        if ($punchCard->used_session >= $punchCard->total_session) {
+            Notification::make()
+                ->title('No sessions left')
+                ->warning()
+                ->send();
+
+            return;
+        }
+
+        $punchCard->increment('used_session');
+
+        $this->addHistory(
+            $punchCard,
+            'Session checked off',
+            Carbon::parse($date)->setTimeFromTimeString(now()->format('H:i:s'))
+        );
+
+        Notification::make()
+            ->title('Session checked off')
+            ->success()
+            ->send();
+    }
+
+    public function restoreMostRecentSession(int $punchCardId): void
+    {
+        $punchCard = $this->getPunchCardOrNotify($punchCardId);
+        if (! $punchCard) {
+            return;
+        }
+
+        if ($punchCard->used_session <= 0) {
+            Notification::make()
+                ->title('No sessions to restore')
+                ->warning()
+                ->send();
+
+            return;
+        }
+
+        $punchCard->decrement('used_session');
+
+        $this->addHistory(
+            $punchCard,
+            'Session restored'
+        );
+
+        Notification::make()
+            ->title('Most recent session restored')
+            ->success()
+            ->send();
+    }
+
+    private function getPunchCardOrNotify(int $punchCardId)
+    {
+        $punchCard = $this->record
+            ->trainerBillings()
+            ->whereKey($punchCardId)
+            ->first();
+
+        if (! $punchCard) {
+            Notification::make()
+                ->title('Punch card not found')
+                ->danger()
+                ->send();
+
+            return null;
+        }
+
+        return $punchCard;
+    }
+
+    private function addHistory(
+        $punchCard,
+        string $action,
+        ?Carbon $date = null
+    ): void {
+        $punchCard->histories()->create([
+            'action' => $action,
+            'date_of_session' => $date ?? now(),
+            'punch_card_id' => $punchCard->id,
+        ]);
+    }
+}
+
+==============================
+
+<h3 class="font-sans
+    font-bold
+    text-xl
+    leading-7
+    text-gray-950
+    dark:text-white
+    mb-4
+">
+    Billing
+</h3>
+<div class="w-full border-t border-gray-200 dark:border-gray-700"></div>
+
+<div class="pt-4 space-y-4">
+    @forelse ($billings as $billing)
+        <div class="space-y-2">
+            <div class="text-sm font-semibold text-gray-900 dark:text-white">
+                {{ $billing->product_name }}
+            </div>
+            <div class="text-xs text-gray-500 dark:text-gray-400">
+                Purchased {{ \Carbon\Carbon::parse($billing->purchased_at)->format('F d') }}
+            </div>
+            <div class="text-xs text-gray-500 dark:text-gray-400">
+                Sessions available
+                <span class="font-medium text-gray-700 dark:text-gray-300">
+                    {{ $billing->total_session - $billing->used_session }}
+                    / {{ $billing->total_session }}
+                </span>
+            </div>
+            <div class="flex items-center gap-1 mt-1">
+                @for ($i = 1; $i <= $billing->total_session; $i++)
+                    @if ($i <= $billing->used_session)
+                        <span class="w-3.5 h-3.5 rounded-full bg-danger-600 inline-block"></span>
+                    @else
+                        <span class="w-3.5 h-3.5 rounded-full border border-danger-600 flex items-center justify-center text-black text-xs font-bold">
+                            ✕
+                        </span>
+                    @endif
+                @endfor
+            </div>
+            @if ($billing->histories->isNotEmpty())
+                <div class="pt-4">
+                    <div class="text-sm font-semibold text-gray-900 dark:text-white">
+                        History
+                    </div>
+                    <div class="pt-2">
+                        @foreach ($billing->histories as $history)
+                            @php
+                                $date = \Carbon\Carbon::parse($history->date_of_session);
+                            @endphp
+
+                            <div class="flex items-center justify-between py-3 border-b border-gray-200 dark:border-gray-700">
+                                <div class="w-1/4 text-sm font-medium text-gray-900 dark:text-white">
+                                    {{ $date->format('d M Y') }}
+                                </div>
+                                <div class="w-1/4 text-sm text-center text-gray-500 dark:text-gray-400">
+                                    {{ $date->format('h:i A') }}
+                                </div>
+                                <div class="w-2/4 text-sm text-right text-gray-700 dark:text-gray-300">
+                                    {{ $history->action }}
+                                </div>
+                            </div>
+                        @endforeach
+                    </div>
+                </div>
+            @endif
+            <!-- ACTION BUTTONS -->
+            <div class="flex items-center gap-2 pt-3 pb-3">
+                <x-filament::button
+                    color="primary"
+                    wire:click="mountAction('checkOffSession', {{ json_encode(['punchCardId' => $billing->id]) }})"
+                >
+                    Check off session
+                </x-filament::button>
+                <x-filament::button
+                    color="gray"
+                    wire:click="mountAction('restoreMostRecentSession', {{ json_encode(['punchCardId' => $billing->id]) }})"
+                >
+                    Restore most recent session
+                </x-filament::button>
+            </div>
+
+            <!-- Divider -->
+            <div class="w-full border-t border-gray-200 dark:border-gray-700"></div>
+        </div>
+    @empty
+        <div class="text-sm text-gray-500 dark:text-gray-400">
+            No billing records available.
+        </div>
+    @endforelse
+</div>
