@@ -1,56 +1,105 @@
- public function trainerBillings()
-    {
-        return tap(
-            $this->setConnection('mysql')->hasMany(
-                PTBillingUserPunchCard::class,
-                'user_id',
-                'id'
-            )
-            ->with('histories')
-            ->orderBy('purchased_at', 'desc'),
-            function ($query) {
-                $this->setConnection('liftbrands');
-            }
-        );
-    }
+<?php
 
+namespace Klyp\Nomergy\Http\Controllers\Stripe;
 
+use Klyp\Nomergy\Http\Controllers\ApiController;
+use Klyp\Nomergy\Services\Stripe\PTBillingCustomerPunchCardService;
+use Symfony\Component\HttpFoundation\Response;
 
-    <?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Model;
-
-class PTBillingUserPunchCard extends Model
+class ApiPTBillingCustomerPunchCardController extends ApiController
 {
-    protected $table = 'pt_billing_user_punch_cards';
-    
-    protected $fillable = [
-        'user_id',
-        'trainer_id',
-        'product_name',
-        'total_session',
-        'used_session',
-        'purchased_at'
-    ];
+    /**
+     *  PT billing stripe customer service instance for handling Stripe API interactions.
+     *
+     * @var customerPunchCardServices
+     */
+    protected $customerPunchCardService;
 
-    public function trainer()
-    {
-        return $this->belongsTo(User::class, 'trainer_id', 'id');
+    /**
+     * Constructor to inject the customer punch card service.
+     *
+     * @param PTBillingCustomerPunchCardService $customerPunchCardService The service used to get puch card customer wise.
+     *
+     */
+    public function __construct(
+        PTBillingCustomerPunchCardService $customerPunchCardService
+    ) {
+        $this->customerPunchCardService = $customerPunchCardService;
     }
 
-    public function user()
+    /**
+     * Retrieve a list of punch card for a given customer.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     *
+     */
+    public function getPunchCardInfoWithHistoryByCustomer()
     {
-        return $this->belongsTo(NomergyUser::class, 'user_id', 'id');
-    }
+        $user = parent::getAuth();
+        
+        try {
+            $punchCardData = $this->customerPunchCardService->getPunchCardInfoWithHistory($user);
 
-    public function histories()
+            return parent::respond([
+                'status' => 'success',
+                'punch_card' => $punchCardData
+            ], Response::HTTP_OK);
+        } catch (\Exception $e) {
+            return parent::respondError(
+                __('klyp.nomergy::fod.no_punch_card_history'),
+                Response::HTTP_INTERNAL_SERVER_ERROR
+            );
+        }
+    }
+}
+
+
+
+================
+
+
+<?php
+
+namespace Klyp\Nomergy\Services\Stripe;
+
+use Klyp\Nomergy\Models\PTBillingUserPunchCard;
+use Klyp\Nomergy\Models\UserPortal;
+
+class PTBillingCustomerPunchCardService
+{
+    /**
+     * Retrieve a list of punch card information for a given customer.
+     *
+     * @param object $user
+     * 
+     */
+    public function getPunchCardInfoWithHistory(object $user)
     {
-        return $this->hasMany(
-            PTBillingUserPunchCardHistory::class,
-            'punch_card_id',
-            'id'
-        )->orderBy('id', 'desc');
+        $puchCards = $user->punchCard()->with('histories')->get();
+        $result = [];
+        foreach ($puchCards as $puchCard) {
+            $trainer = UserPortal::find($puchCard->trainer_id);
+
+            $historyList = [];
+            foreach ($puchCard->histories as $history) {
+                $date = \Carbon\Carbon::parse($history->date_of_session);
+                $historyList[] = [
+                    'date' => $date->format('d M Y'),
+                    'time' => $date->format('h:i A'),
+                    'action' => $history->action,
+                ];
+            }
+
+            $result[] = [
+                'product_name' => $puchCard->product_name,
+                'trainer_name' => $trainer->first_name . ' ' . $trainer->last_name,
+                'purchased_at' => \Carbon\Carbon::parse($puchCard->purchased_at)->format('F d'),
+                'total_session' => $puchCard->total_session,
+                'used_session' => $puchCard->used_session,
+                'history' => $historyList,
+            ];
+        }
+
+        return $result;
     }
 }
