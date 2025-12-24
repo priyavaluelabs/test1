@@ -76,7 +76,7 @@ class PTBillingCustomerPunchCardService
     public function getPunchCardInfoWithHistory(object $user)
     {
         $puchCards = $user->punchCard()->with('histories')->get();
-        $result = [];
+        
         foreach ($puchCards as $puchCard) {
             $trainer = UserPortal::find($puchCard->trainer_id);
 
