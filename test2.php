@@ -1,105 +1,43 @@
 <?php
 
-namespace Klyp\Nomergy\Http\Controllers\Stripe;
-
-use Klyp\Nomergy\Http\Controllers\ApiController;
-use Klyp\Nomergy\Services\Stripe\PTBillingCustomerPunchCardService;
-use Symfony\Component\HttpFoundation\Response;
-
-class ApiPTBillingCustomerPunchCardController extends ApiController
-{
-    /**
-     *  PT billing stripe customer service instance for handling Stripe API interactions.
-     *
-     * @var customerPunchCardServices
-     */
-    protected $customerPunchCardService;
-
-    /**
-     * Constructor to inject the customer punch card service.
-     *
-     * @param PTBillingCustomerPunchCardService $customerPunchCardService The service used to get puch card customer wise.
-     *
-     */
-    public function __construct(
-        PTBillingCustomerPunchCardService $customerPunchCardService
-    ) {
-        $this->customerPunchCardService = $customerPunchCardService;
-    }
-
-    /**
-     * Retrieve a list of punch card for a given customer.
-     *
-     * @return \Illuminate\Http\JsonResponse
-     *
-     */
-    public function getPunchCardInfoWithHistoryByCustomer()
-    {
-        $user = parent::getAuth();
-        
-        try {
-            $punchCardData = $this->customerPunchCardService->getPunchCardInfoWithHistory($user);
-
-            return parent::respond([
-                'status' => 'success',
-                'punch_card' => $punchCardData
-            ], Response::HTTP_OK);
-        } catch (\Exception $e) {
-            return parent::respondError(
-                __('klyp.nomergy::fod.no_punch_card_history'),
-                Response::HTTP_INTERNAL_SERVER_ERROR
-            );
-        }
-    }
-}
-
-
-
-================
-
-
-<?php
-
 namespace Klyp\Nomergy\Services\Stripe;
 
-use Klyp\Nomergy\Models\PTBillingUserPunchCard;
+use Carbon\Carbon;
 use Klyp\Nomergy\Models\UserPortal;
 
 class PTBillingCustomerPunchCardService
 {
-    /**
-     * Retrieve a list of punch card information for a given customer.
-     *
-     * @param object $user
-     * 
-     */
-    public function getPunchCardInfoWithHistory(object $user)
+    public function getPunchCardInfoWithHistory(object $user): array
     {
-        $puchCards = $user->punchCard()->with('histories')->get();
-        $result = [];
-        foreach ($puchCards as $puchCard) {
-            $trainer = UserPortal::find($puchCard->trainer_id);
+        $punchCards = $user->punchCard()
+            ->with(['histories', 'trainer'])
+            ->get();
 
-            $historyList = [];
-            foreach ($puchCard->histories as $history) {
-                $date = \Carbon\Carbon::parse($history->date_of_session);
-                $historyList[] = [
-                    'date' => $date->format('d M Y'),
-                    'time' => $date->format('h:i A'),
-                    'action' => $history->action,
-                ];
-            }
+        return $punchCards->map(function ($punchCard) {
 
-            $result[] = [
-                'product_name' => $puchCard->product_name,
-                'trainer_name' => $trainer->first_name . ' ' . $trainer->last_name,
-                'purchased_at' => \Carbon\Carbon::parse($puchCard->purchased_at)->format('F d'),
-                'total_session' => $puchCard->total_session,
-                'used_session' => $puchCard->used_session,
-                'history' => $historyList,
+            return [
+                'product_name'  => $punchCard->product_name,
+                'trainer_name'  => optional($punchCard->trainer)->first_name . ' ' .
+                                   optional($punchCard->trainer)->last_name,
+                'purchased_at'  => Carbon::parse($punchCard->purchased_at)->format('F d'),
+                'total_session' => $punchCard->total_session,
+                'used_session'  => $punchCard->used_session,
+                'history'       => $this->formatHistory($punchCard->histories),
             ];
-        }
 
-        return $result;
+        })->values()->toArray();
+    }
+
+    private function formatHistory($histories): array
+    {
+        return $histories->map(function ($history) {
+            $date = Carbon::parse($history->date_of_session);
+
+            return [
+                'date'   => $date->format('d M Y'),
+                'time'   => $date->format('h:i A'),
+                'action' => $history->action,
+            ];
+        })->toArray();
     }
 }
