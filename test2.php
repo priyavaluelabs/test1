@@ -1,48 +1,66 @@
-<?php
-
-namespace Klyp\Nomergy\Http\Traits;
-
-use Klyp\Nomergy\Models\UserPortal;
-use Symfony\Component\HttpFoundation\Response;
-use Illuminate\Http\Exceptions\HttpResponseException;
-
-trait TrainerValidationTrait
-{
-    public function validateTrainerForUserClub($user, $trainerId, $trainerService)
+ public function getPaymentHistory(array $data)
     {
-        $clubId = $user->profile ? $user->profile->club_id : null;
+        $profiles = PTBillingUserStripeProfile::where('user_id', $data['user_id'])
+            ->get();
 
-        if (empty($clubId)) {
-            throw new HttpResponseException(
-                response()->json([
-                    'status'  => 'error',
-                    'message' => __('klyp.nomergy::fod.user_has_no_club'),
-                ], Response::HTTP_BAD_REQUEST)
+        $result = [];
+        foreach ($profiles as $profile) {
+            $customerId = $profile->stripe_customer_id;
+            $accountId = $profile->stripe_account_id;
+            
+            $symbol = '$';
+            $trainer = UserPortal::where('stripe_account_id', $profile->stripe_account_id)->first();
+            if ($trainer) {
+                $symbol = $this->getCurrencySymbol($trainer->corp_partner_id);
+            }
+            $terms = !empty($trainer->billing_setting->terms) ? $trainer->billing_setting->terms : null;
+
+            $paymentIntents = $this->stripe->paymentIntents->all([
+                'customer' => $customerId,
+                    'expand' => [
+                        'data.payment_method',
+                        'data.charges.data.balance_transaction',
+                    ],
+                    'limit' => $data['limit'],
+                ],
+                ['stripe_account' => $accountId]
             );
+
+            foreach ($paymentIntents->data as $paymentIntent) {
+                // Handle amount: fallback to `amount` if `amount_received` is missing
+                $amount   = ($paymentIntent->amount_received && $paymentIntent->amount_received > 0) ? 
+                    $paymentIntent->amount_received : $paymentIntent->amount;
+                $currency = strtoupper($paymentIntent->currency);
+
+                $paymentMethod    = $paymentIntent->payment_method;
+                $card = ($paymentMethod && $paymentMethod ->type === 'card') ? $paymentMethod ->card : null;
+
+                $result[] = [
+                    'id'           => $paymentIntent->id,
+                    'trainer_name' => $paymentIntent->metadata->trainer_name ?? 'N/A',
+                    'product_type' => $paymentIntent->metadata->product_type ?? '10 session Packs',
+
+                    'purchase_details' => [
+                        'product_name'     => $paymentIntent->metadata->product_name ?? 'N/A',
+                        'transaction_date' => date('M j, Y g:i A', $paymentIntent->created),
+                        'payment_status'   => $paymentIntent->status === 'requires_payment_method'
+                            ? 'Incomplete' : ucfirst($paymentIntent->status),
+                        'amount'           => number_format($amount / 100, 2),
+                        'currency'         => $currency,
+                        'symbol'           => $symbol,
+                    ],
+
+                    'payment_methods' => [
+                        'payment_method' => strtoupper($paymentMethod ->type ?? 'N/A'),
+                        'card_type'       => strtoupper($card->brand ?? 'N/A'),
+                        'card_number'    => $card ? "XXXX XXXX XXXX {$card->last4}" : null,
+                        'expires'        => $card ? "{$card->exp_month}/{$card->exp_year}" : null,
+                    ],
+
+                    'terms' => $terms
+                ];
+            }
         }
 
-        $trainers = $trainerService->getTrainerIdsForClub($clubId);
-
-        if (! in_array($trainerId, $trainers)) {
-            throw new HttpResponseException(
-                response()->json([
-                    'status'  => 'error',
-                    'message' => __('klyp.nomergy::fod.trainer_having_different_club_as_login_user'),
-                ], Response::HTTP_BAD_REQUEST)
-            );
-        }
-
-        $trainer = UserPortal::find($trainerId);
-
-        if (! $trainer || ! $trainer->stripe_account_id || ! $trainer->is_onboarded) {
-            throw new HttpResponseException(
-                response()->json([
-                    'status'  => 'error',
-                    'message' => __('klyp.nomergy::fod.trainer_not_in_stripe'),
-                ], Response::HTTP_BAD_REQUEST)
-            );
-        }
-
-        return $trainer;
+        return $result;
     }
-}
