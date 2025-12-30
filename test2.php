@@ -66,3 +66,6 @@ trait TrainerValidationTrait
         return $trainer;
     }
 }
+
+
+[2025-12-30 05:57:45] production.ERROR: Symfony\Component\Debug\Exception\FatalThrowableError: Typed property Klyp\Nomergy\Http\Controllers\Stripe\ApiPTBillingCustomerProductController::$trainerService must not be accessed before initialization in D:\myproject\liftbrand-app-new\plugins\klyp\nomergy\http\traits\TrainerValidationTrait.php:40
