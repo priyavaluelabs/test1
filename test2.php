@@ -5,21 +5,26 @@ namespace Klyp\Nomergy\Http\Traits;
 use Klyp\Nomergy\Models\UserPortal;
 use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Klyp\Nomergy\Services\PTBillingTrainerService;
 
 trait TrainerValidationTrait
 {
     /**
+     * Service injected from the class using this trait
+     */
+    protected PTBillingTrainerService $trainerService;
+
+    /**
      * Validate trainer belongs to the user's club and is onboarded on Stripe.
      *
-     * @param object $user      Authenticated user
-     * @param int    $trainerId Trainer ID to validate
-     * @param object $trainerService Instance of trainer service for fetching club trainers
+     * @param object $user
+     * @param int    $trainerId
      *
-     * @throws \Illuminate\Http\Exceptions\HttpResponseException
+     * @return UserPortal
      */
-    public function validateTrainerForUserClub($user, $trainerId, $trainerService)
+    public function validateTrainerForUserClub($user, $trainerId)
     {
-        $clubId = $user->profile ? $user->profile->club_id : null;
+        $clubId = $user->profile?->club_id;
 
         if (empty($clubId)) {
             throw new HttpResponseException(
@@ -32,9 +37,9 @@ trait TrainerValidationTrait
             );
         }
 
-        $trainers = $trainerService->getTrainerIdsForClub($clubId);
+        $trainerIds = $this->trainerService->getTrainerIdsForClub($clubId);
 
-        if (! in_array($trainerId, $trainers)) {
+        if (! in_array($trainerId, $trainerIds)) {
             throw new HttpResponseException(
                 response()->json([
                     'error' => [
@@ -51,7 +56,7 @@ trait TrainerValidationTrait
             throw new HttpResponseException(
                 response()->json([
                     'error' => [
-                        'message' =>  __('klyp.nomergy::fod.trainer_not_in_stripe'),
+                        'message' => __('klyp.nomergy::fod.trainer_not_in_stripe'),
                         'status_code' => Response::HTTP_BAD_REQUEST,
                     ],
                 ], Response::HTTP_BAD_REQUEST)
