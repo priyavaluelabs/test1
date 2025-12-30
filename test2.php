@@ -1,4 +1,4 @@
- public function getPaymentHistory(array $data)
+public function getPaymentHistory(array $data)
     {
         $profiles = PTBillingUserStripeProfile::where('user_id', $data['user_id'])
             ->get();
@@ -28,15 +28,16 @@
 
             foreach ($paymentIntents->data as $paymentIntent) {
                 // Handle amount: fallback to `amount` if `amount_received` is missing
-                $amount   = ($paymentIntent->amount_received && $paymentIntent->amount_received > 0) ? 
+                $amount  = ($paymentIntent->amount_received && $paymentIntent->amount_received > 0) ? 
                     $paymentIntent->amount_received : $paymentIntent->amount;
                 $currency = strtoupper($paymentIntent->currency);
 
-                $paymentMethod    = $paymentIntent->payment_method;
+                $paymentMethod = $paymentIntent->payment_method;
                 $card = ($paymentMethod && $paymentMethod ->type === 'card') ? $paymentMethod ->card : null;
 
                 $result[] = [
                     'id'           => $paymentIntent->id,
+                    'created'      => isset($paymentIntent->created) ? (int)$paymentIntent->created : 0,
                     'trainer_name' => $paymentIntent->metadata->trainer_name ?? 'N/A',
                     'product_type' => $paymentIntent->metadata->product_type ?? '10 session Packs',
 
@@ -61,6 +62,10 @@
                 ];
             }
         }
+
+        usort($result, function($a, $b) {
+            return $b['created'] - $a['created'];
+        });
 
         return $result;
     }
