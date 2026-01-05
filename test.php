@@ -1,1 +1,1 @@
-https://dashboard.stripe.com/stripecli/confirm_auth?t=4NJ1o4iBltxx1X3vcmXSM9EcgMiJ7ohX
+https://dashboard.stripe.com/stripecli/confirm_auth?t=B1Yhe6tHsxMDB0FhdXHBEvAvbpIpwHct
