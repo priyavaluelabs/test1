@@ -1,7 +1,1 @@
-// Validate region exists in config
-if (!isset(config('stripe_regions.regions')[$region])) {
-    return response("Invalid region", 400);
-}
-
-$webhookSecret = config("stripe_regions.regions.$region.webhook_secret");
-
+https://dashboard.stripe.com/stripecli/confirm_auth?t=MHSx3mwjo41ZXiwN4cVCkhStJk3B6CVi
