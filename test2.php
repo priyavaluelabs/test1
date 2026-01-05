@@ -1,47 +1,52 @@
-use Stripe\StripeClient;
-use Illuminate\Contracts\Auth\Factory as AuthFactory;
+<?php
 
-public function register(): void
+namespace App\Http\Controllers\API;
+
+use Stripe\Exception\SignatureVerificationException;
+use App\Events\StripePaymentIntentSucceeded;
+use App\Events\StripeAccountOnboarded;
+use Symfony\Component\HttpFoundation\Response;
+use App\Http\Controllers\Controller;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Http\Request;
+use Stripe\Webhook;
+
+class StripeWebhookController extends Controller
 {
-    $this->app->bind(StripeClient::class, function ($app) {
+    public function handle(Request $request)
+    {
+        $payload = $request->getContent();
+        $sigHeader = $request->header('Stripe-Signature');
+        $endpointSecret = config('services.stripe.webhook_secret');
 
-        $region = 'US'; // fallback
+        if (!$sigHeader) {
+            return response('Missing signature header', Response::HTTP_BAD_REQUEST);
+        }
 
         try {
-            /** @var AuthFactory $auth */
-            $auth = $app->make(AuthFactory::class);
-
-            if ($auth->guard()->check()) {
-                $user = $auth->guard()->user();
-
-                $region = $user->corporatePartner?->region ?? 'US';
-            }
-        } catch (\Throwable $e) {
-            // CLI / Queue / Webhook safe
-            $region = 'US';
+            // Verify the webhook signature
+            $event = Webhook::constructEvent($payload, $sigHeader, $endpointSecret);
+        } catch (SignatureVerificationException $e) {
+            return response('Invalid signature', Response::HTTP_BAD_REQUEST);
         }
 
-        $config = config("stripe_regions.regions.$region");
+        // Handle the webhook event
+        switch ($event->type) {
+            case 'payment_intent.succeeded':
+                StripePaymentIntentSucceeded::dispatch($event);
+                break;
 
-        if (! $config) {
-            throw new \RuntimeException("Stripe region [$region] not configured.");
+            case 'invoice.payment_failed':
+                Log::info('Invoice payment failed:', ['event' => $event->toArray()]);
+                break;
+
+            case 'account.updated':
+                StripeAccountOnboarded::dispatch($event);
+                break;
+
+            default:
         }
 
-        return new StripeClient($config['secret']);
-    });
+        return response('Webhook processed', Response::HTTP_OK);
+    }
 }
-
-
-
-===
-
-return [
-    'regions' => [
-        'US' => ['secret' => env('STRIPE_US_SECRET')],
-        'EU' => ['secret' => env('STRIPE_EU_SECRET')],
-        'IN' => ['secret' => env('STRIPE_IN_SECRET')],
-    ],
-];
-
-
-
