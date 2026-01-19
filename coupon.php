@@ -1,31 +1,18 @@
-$data = $this->formData;
+<?php
 
-// Base data
-$couponData = [
-    'name' => $data['name'],
-    'duration' => 'once',
-    'metadata' => [
-        'description' => $data['description'] ?? '',
-        'products' => $data['products'] ?? 'all',
-    ],
-];
+namespace Klyp\Nomergy\Services\Stripe;
 
-// Only add percent_off if discount type is percentage
-if ($data['discount_type'] === 'percentage') {
-    $couponData['percent_off'] = floatval($data['value']);
+use Stripe\StripeClient;
+
+abstract class BaseStripeService
+{
+    protected function stripe(): StripeClient
+    {
+        $stripe = app('stripe.client');
+        
+        return $stripe;
+    }
 }
 
-// Only add amount_off and currency if discount type is fixed
-if ($data['discount_type'] === 'fixed') {
-    $couponData['amount_off'] = intval($data['value'] * 100); // cents
-    $couponData['currency'] = 'usd'; // or your currency
-}
 
-// Create the coupon
-$coupon = \Stripe\Coupon::create($couponData);
-
-// Optional: create a promotion code
-$promotionCode = \Stripe\PromotionCode::create([
-    'coupon' => $coupon->id,
-    'active' => true,
-]);
+error : "Return value of Klyp\\Nomergy\\Services\\Stripe\\BaseStripeService::stripe() must be an instance of Stripe\\StripeClient, null returned"s
