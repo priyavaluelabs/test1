@@ -209,3 +209,27 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
             ->toArray();
     }
 }
+
+
+===========
+
+<x-filament-panels::page>
+    <div class="filament-tables-container rounded-xl border border-gray-300 bg-white shadow-sm">
+        <x-payment-tab />
+    </div>
+    <div class="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
+        <div class="p-6 space-y-4">
+            <div class="flex items-center gap-2">
+                <h2 class="text-xl font-bold">
+                    {{ $isEdit ? 'Edit Discount & Promo Code' : 'Create Discount & Promo Code' }}
+                </h2>
+            </div>
+            {{ $this->form }}
+            <x-filament::button wire:click="save" class="mt-4">
+                {{ __('labels.save') }}
+            </x-filament::button>
+        </div>
+    </div>
+</x-filament-panels::page>
+
+    
