@@ -1,34 +1,25 @@
-/**
-     * FILAMENT DELETE ACTION (used inside Blade)
-     */
-    public function deleteAction(): Actions\Action
-    {
-        return Actions\Action::make('delete')
-            ->label('Delete')
-            ->color('danger')
-            ->requiresConfirmation()
-            ->modalHeading('Delete Coupon')
-            ->modalDescription('Are you sure you want to delete this coupon? This action cannot be undone.')
-            ->modalSubmitActionLabel('Yes, delete')
-            ->action(function () {
-                try {
-                    $this->stripeClient()
-                        ->coupons
-                        ->delete($this->couponId);
+ // CREATE
+        $couponData = [
+            'name' => $data['name'],
+            'duration' => 'once',
+            'metadata' => [
+                'description' => $data['description'] ?? '',
+            ]
+        ];
 
-                    Notification::make()
-                        ->title('Coupon deleted successfully')
-                        ->success()
-                        ->send();
+        if (! in_array('all', $data['products'])) {
+            $couponData['applies_to'] = [
+                'products' => $data['products'],
+            ];
+            $couponData['metadata'] = [
+                'product_ids' => implode(',', $data['products']),
+            ];
+        }
 
-                    $this->redirect('/admin/stripe/discounts');
-
-                } catch (\Exception $e) {
-                    Notification::make()
-                        ->title('Unable to delete coupon')
-                        ->body($e->getMessage())
-                        ->danger()
-                        ->send();
-                }
-            });
-    }
+        if ($data['discount_type'] === 'percentage') {
+            $couponData['percent_off'] = (float) $data['value'];
+        } else {
+            $account = $this->stripeClient()->accounts->retrieve();
+            $couponData['amount_off'] = (int) ($data['value'] * 100);
+            $couponData['currency'] = $account->default_currency;
+        }
