@@ -1,46 +1,22 @@
-<x-filament-panels::page>
-    <div class="filament-tables-container rounded-xl border border-gray-300 bg-white shadow-sm">
-        <x-payment-tab />
-    </div>
-    <div class="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700" wire:ignore>
-        <div class="p-6 space-y-4">
-            <div class="flex items-center gap-2">
-                <h2 class="text-xl font-bold">
-                    Create Discount & Promo Code
-                </h2>
-            </div>
-
-            <form wire:submit.prevent="save" class="space-y-4">
-                {{ $this->form }}
-                <x-filament::button type="submit">
-                    Save
-                </x-filament::button>
-            </form>
-        </div>
-    </div>
-</x-filament-panels::page>
-
-
-===========
-
 <?php
+
 namespace App\Filament\Pages\StripeDiscounts\Pages;
 
-use Filament\Forms\Concerns\InteractsWithForms;
-use Filament\Notifications\Notification;
 use App\Filament\Pages\BaseStripePage;
-use Illuminate\Support\Facades\Auth;
 use Filament\Forms;
 use Filament\Forms\Form;
+use Filament\Notifications\Notification;
+use Filament\Forms\Concerns\InteractsWithForms;
 
-class CreateDiscount extends BaseStripePage implements Forms\Contracts\HasForms
+class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
 {
     use InteractsWithForms;
-    
-    protected static string $view = 'filament.pages.stripe.discount.create';
-    protected static ?string $slug = 'stripe/discounts/create';
 
-    public $user;
+    protected static string $view = 'filament.pages.stripe.discount.manage';
+
+    public ?string $couponId = null;
+    public bool $isEdit = false;
+
     public $formData = [
         'name' => null,
         'products' => [],
@@ -49,133 +25,187 @@ class CreateDiscount extends BaseStripePage implements Forms\Contracts\HasForms
         'description' => null,
     ];
 
-
     public static function shouldRegisterNavigation(): bool
     {
         return false;
     }
 
-    public function mount(): void
+    /**
+     * ✅ TWO ROUTES
+     */
+    public static function getRoutes(): array
+    {
+        return [
+            'create' => static::route('/stripe/discount/create'),
+            'edit'   => static::route('/stripe/discounts/{couponId}'),
+        ];
+    }
+
+    /**
+     * ✅ Detect create / edit
+     */
+    public function mount(?string $couponId = null): void
     {
         parent::mount();
+
         if (! $this->stripeAvailable) {
             return;
         }
-        
-        $this->user = Auth::user();
+
+        $this->couponId = $couponId;
+        $this->isEdit = filled($couponId);
+
+        if ($this->isEdit) {
+            $this->loadCoupon();
+        }
     }
 
+    /**
+     * ✅ Form
+     */
     public function form(Form $form): Form
     {
         return $form
+            ->statePath('formData')
             ->schema([
-            Forms\Components\Section::make('Discount Details')
-            ->schema([
-                // NAME
-                Forms\Components\Grid::make(4)
+                Forms\Components\Section::make('Discount Details')
                     ->schema([
-                        Forms\Components\TextInput::make('name')
-                            ->statePath('formData.name')
-                            ->label('Name (appears on receipts)')
-                            ->required()
-                            ->columnSpan(2),
-                    ]),
-                // PRODUCT
-                Forms\Components\Grid::make(4)
-                    ->schema([
-                        Forms\Components\Select::make('products')
-                            ->label('Product(s)')
-                            ->statePath('formData.products')
-                            ->multiple()
-                            ->searchable()
-                            ->preload()
-                            ->options(fn () => [
+                        // NAME
+                        Forms\Components\Grid::make(4)->schema([
+                            Forms\Components\TextInput::make('name')
+                                ->label('Name (appears on receipts)')
+                                ->required()
+                                ->columnSpan(2),
+                        ]),
+
+                        // PRODUCTS
+                        Forms\Components\Grid::make(4)->schema([
+                            Forms\Components\Select::make('products')
+                                ->label('Product(s)')
+                                ->multiple()
+                                ->searchable()
+                                ->preload()
+                                ->options(fn () => [
                                     'all' => 'All Products',
                                 ] + $this->getStripeProducts())
-                            ->columnSpan(2),
-                    ]),
-                // DISCOUNT TYPE + VALUE (SAME ROW)
-                Forms\Components\Grid::make(3)
-                    ->schema([
-                    Forms\Components\Group::make([
-                        Forms\Components\ToggleButtons::make('discount_type')
-                            ->label('Discount Type')
-                            ->statePath('formData.discount_type')
-                            ->options([
-                                'percentage' => 'Percentage',
-                                'fixed' => 'Fixed amount',
-                            ])
-                            ->inline()
-                            ->live()
-                            ->extraAttributes([
-                                'class' => 'w-fit',
-                            ]),
-                    ]),
-
-                    Forms\Components\TextInput::make('value')
-                        ->label('Value')
-                        ->statePath('formData.value')
-                        ->numeric()
-                        ->extraInputAttributes([
-                            'class' => 'max-w-xs h-9',
+                                ->columnSpan(2),
                         ]),
-                ]),
-                // DESCRIPTION
-                Forms\Components\Grid::make(4)
-                    ->schema([
-                    Forms\Components\Textarea::make('description')
-                        ->label('Description (optional)')
-                        ->statePath('formData.description')
-                        ->rows(5)
-                        ->columnSpan(3),
-                ])
-            ]),
-        ]);
+
+                        // TYPE + VALUE
+                        Forms\Components\Grid::make(3)->schema([
+                            Forms\Components\ToggleButtons::make('discount_type')
+                                ->label('Discount Type')
+                                ->options([
+                                    'percentage' => 'Percentage',
+                                    'fixed' => 'Fixed Amount',
+                                ])
+                                ->inline()
+                                ->live()
+                                ->disabled(fn () => $this->isEdit),
+
+                            Forms\Components\TextInput::make('value')
+                                ->label('Value')
+                                ->numeric()
+                                ->disabled(fn () => $this->isEdit),
+                        ]),
+
+                        // DESCRIPTION
+                        Forms\Components\Textarea::make('description')
+                            ->label('Description (optional)')
+                            ->rows(4)
+                            ->columnSpanFull(),
+                    ]),
+            ]);
     }
 
+    /**
+     * ✅ Load coupon for edit
+     */
+    protected function loadCoupon(): void
+    {
+        $coupon = $this->stripeClient()
+            ->coupons
+            ->retrieve($this->couponId);
+
+        $this->formData = [
+            'name' => $coupon->name,
+            'discount_type' => $coupon->percent_off ? 'percentage' : 'fixed',
+            'value' => $coupon->percent_off
+                ?? ($coupon->amount_off / 100),
+            'products' => $coupon->applies_to->products ?? ['all'],
+            'description' => $coupon->metadata->description ?? null,
+        ];
+
+        $this->form->fill($this->formData);
+    }
+
+    /**
+     * ✅ Save (create / update)
+     */
     public function save(): void
     {
         $data = $this->formData;
 
-        // Base data
+        // EDIT
+        if ($this->isEdit) {
+            $this->stripeClient()
+                ->coupons
+                ->update($this->couponId, [
+                    'name' => $data['name'],
+                    'metadata' => [
+                        'description' => $data['description'] ?? '',
+                    ],
+                ]);
+
+            Notification::make()
+                ->title('Coupon updated successfully')
+                ->success()
+                ->send();
+
+            return;
+        }
+
+        // CREATE
         $couponData = [
             'name' => $data['name'],
-            'duration' => 'once'
+            'duration' => 'once',
         ];
 
         if (! in_array('all', $data['products'])) {
             $couponData['applies_to'] = [
                 'products' => $data['products'],
             ];
-            $couponData['metadata'] = [
-                'description' => $data['description'] ?? '',
-                'products' => implode(',', $data['products'])
-            ];
         }
 
         if ($data['discount_type'] === 'percentage') {
-            $couponData['percent_off'] = floatval($data['value']);
-        }
-        
-        if ($data['discount_type'] === 'fixed') {
+            $couponData['percent_off'] = (float) $data['value'];
+        } else {
             $account = $this->stripeClient()->accounts->retrieve();
-            $couponData['amount_off'] = intval($data['value'] * 100);
+            $couponData['amount_off'] = (int) ($data['value'] * 100);
             $couponData['currency'] = $account->default_currency;
         }
 
         $this->stripeClient()->coupons->create($couponData);
 
         Notification::make()
-            ->title('Coupon has been created successfully.')
+            ->title('Coupon created successfully')
             ->success()
             ->send();
     }
 
+    /**
+     * ✅ Page heading
+     */
     public function getHeading(): string
     {
-        return __('stripe.payments');
+        return $this->isEdit
+            ? 'Edit Discount'
+            : 'Create Discount';
     }
 
+    /**
+     * ✅ Stripe products
+     */
     protected function getStripeProducts(): array
     {
         $products = $this->stripeClient()
@@ -190,3 +220,23 @@ class CreateDiscount extends BaseStripePage implements Forms\Contracts\HasForms
     }
 }
 
+
+<x-filament-panels::page>
+    <div class="rounded-xl bg-white border border-gray-200 shadow-sm">
+        <div class="p-6 space-y-4">
+
+            <h2 class="text-xl font-bold">
+                {{ $isEdit ? 'Edit Discount & Promo Code' : 'Create Discount & Promo Code' }}
+            </h2>
+
+            <form wire:submit.prevent="save" class="space-y-4">
+                {{ $this->form }}
+
+                <x-filament::button type="submit">
+                    {{ $isEdit ? 'Update' : 'Save' }}
+                </x-filament::button>
+            </form>
+
+        </div>
+    </div>
+</x-filament-panels::page>
