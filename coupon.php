@@ -19,3 +19,21 @@ Select::make('customer_id')
     })
     ->getOptionLabelUsing(fn ($value) => $value)
     ->nullable();
+
+=====
+
+
+$payload = [
+    'coupon' => $couponId,
+    'code' => $data['code'],
+    'expires_at' => Carbon::parse($data['expires_at'])->timestamp,
+];
+
+if (! empty($data['customer_id'])) {
+    $payload['customer'] = $data['customer_id']; // cus_xxx
+}
+
+\Stripe\PromotionCode::create(
+    $payload,
+    ['stripe_account' => $this->connectedAccountId]
+);
