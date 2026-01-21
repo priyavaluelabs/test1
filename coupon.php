@@ -181,6 +181,35 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
         $this->redirect('/stripe/discounts/' . $coupon->id);
     }
 
+    public function deleteAction(): Actions\Action
+    {
+        return Actions\Action::make('delete')
+            ->label('Delete')
+            ->color('danger')
+            ->requiresConfirmation()
+            ->modalHeading('Delete Coupon')
+            ->modalDescription('Are you sure you want to delete this coupon? This action cannot be undone.')
+            ->modalSubmitActionLabel('Yes, delete')
+            ->action(function () {
+                try {
+                    $this->stripeClient()->coupons->delete($this->couponId, [], [
+                        'stripe_account' => $this->user?->stripe_account_id,
+                    ]);
+
+                    $this->notify('Coupon deleted successfully');
+
+                    $this->redirect('/stripe/discounts');
+
+                } catch (\Exception $e) {
+                    Notification::make()
+                        ->title('Unable to delete coupon')
+                        ->body($e->getMessage())
+                        ->danger()
+                        ->send();
+                }
+            });
+    }
+
     private function notify(string $message, string $type = 'success'): void
     {
         Notification::make()->title($message)->{$type}()->send();
@@ -189,7 +218,6 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
     protected function getStripeProducts(): array
     {
         $products = $this->stripeClient()->products->all(['active' => true, 'limit' => 100], ['stripe_account' => $this->user?->stripe_account_id]);
-
         return collect($products->data)->mapWithKeys(fn ($product) => [$product->id => $product->name])->toArray();
     }
 
@@ -242,5 +270,10 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
     public function unArchivePromoCode(string $promoCodeId): void
     {
         $this->setPromoCodeActiveStatus($promoCodeId, true);
+    }
+
+    public function startEditing(): void
+    {
+        $this->isEditing = true;
     }
 }
