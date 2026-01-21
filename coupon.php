@@ -4,6 +4,7 @@ namespace App\Filament\Pages\StripeDiscounts\Pages;
 
 use App\Filament\Pages\BaseStripePage;
 use Filament\Actions\Concerns\InteractsWithActions;
+use Illuminate\Support\Facades\Auth;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Notifications\Notification;
@@ -37,6 +38,7 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
 
     
     public array $promoCodes = [];
+    public $user;
 
     public static function shouldRegisterNavigation(): bool
     {
@@ -53,7 +55,8 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
         if (! $this->stripeAvailable) {
             return;
         }
-
+        
+        $this->user = Auth::user();
         $this->couponId = $couponId;
         $this->isEdit = $couponId !== null && $couponId !== 'create';
 
@@ -128,7 +131,9 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
 
     protected function loadCoupon(): void
     {
-        $coupon = $this->stripeClient()->coupons->retrieve($this->couponId);
+        $coupon = $this->stripeClient()->coupons->retrieve($this->couponId, [], [
+            'stripe_account' => $this->user?->stripe_account_id,
+        ]);
 
         $productIds = isset($coupon->metadata->product_ids) ?
             explode(',', $coupon->metadata->product_ids)
@@ -168,7 +173,9 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
                 try {
                     $this->stripeClient()
                         ->coupons
-                        ->delete($this->couponId);
+                        ->delete($this->couponId, [], [
+                            'stripe_account' => $this->user?->stripe_account_id,
+                        ]);
 
                     Notification::make()
                         ->title('Coupon deleted successfully')
@@ -197,8 +204,10 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
                 'name' => $data['name'],
                 'metadata' => [
                     'description' => $data['description'] ?? '',
-                ],
-            ]);
+                ]], [
+                    'stripe_account' => $this->user?->stripe_account_id,
+                ]
+            );
 
             Notification::make()
                 ->title('Coupon updated successfully')
@@ -228,12 +237,17 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
         if ($data['discount_type'] === 'percentage') {
             $couponData['percent_off'] = (float) $data['value'];
         } else {
-            $account = $this->stripeClient()->accounts->retrieve();
+            $account = $this->stripeClient()->accounts->retrieve(null,
+            [
+                'stripe_account' => $this->user?->stripe_account_id,
+            ]);
             $couponData['amount_off'] = (int) ($data['value'] * 100);
             $couponData['currency'] = $account->default_currency;
         }
   
-        $coupon = $this->stripeClient()->coupons->create($couponData);
+        $coupon = $this->stripeClient()->coupons->create($couponData, [
+            'stripe_account' => $this->user?->stripe_account_id,
+        ]);
 
         Notification::make()
             ->title('Coupon created successfully')
@@ -248,7 +262,7 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
         $products = $this->stripeClient()->products->all([
             'active' => true,
             'limit' => 100,
-        ]);
+        ], ['stripe_account' => $this->user?->stripe_account_id]);
 
         return collect($products->data)
             ->mapWithKeys(fn ($product) => [
@@ -267,7 +281,7 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
         $promos = $this->stripeClient()->promotionCodes->all([
             'coupon' => $this->couponId,
             'limit' => 100,
-        ]);
+        ], ['stripe_account' => $this->user?->stripe_account_id]);
 
         $this->promoCodes = collect($promos->data)->map(function ($promo) {
             $validFrom = Carbon::createFromTimestamp($promo->created);
@@ -292,7 +306,7 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
     {
         $customers = $this->stripeClient()->customers->all([
             'limit' => 100,
-        ]);
+        ], ['stripe_account' => $this->user?->stripe_account_id]);
 
         return collect($customers->data)
             ->mapWithKeys(fn ($customer) => [
@@ -389,7 +403,7 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
 
                     $this->stripeClient()
                         ->promotionCodes
-                        ->create($payload);
+                        ->create($payload, ['stripe_account' => $this->user?->stripe_account_id]);
 
                     \Filament\Notifications\Notification::make()
                         ->title('Promo code created')
@@ -415,7 +429,7 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
                 ->promotionCodes
                 ->update($promoCodeId, [
                     'active' => false,
-                ]);
+                ], ['stripe_account' => $this->user?->stripe_account_id]);
 
             Notification::make()
                 ->title('Promo code archived')
@@ -439,7 +453,7 @@ class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
                 ->promotionCodes
                 ->update($promoCodeId, [
                     'active' => true,
-                ]);
+                ], ['stripe_account' => $this->user?->stripe_account_id]);
 
             Notification::make()
                 ->title('Promo code unarchived')
