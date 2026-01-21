@@ -1,290 +1,136 @@
 <?php
-
 namespace App\Filament\Pages\StripeDiscounts\Pages;
 
 use App\Filament\Pages\BaseStripePage;
-use Filament\Actions\Concerns\InteractsWithActions;
-use Filament\Forms;
-use Filament\Forms\Form;
-use Filament\Notifications\Notification;
-use Filament\Actions;
-use Filament\Forms\Concerns\InteractsWithForms;
+use Illuminate\Support\Facades\Auth;
 use Carbon\Carbon;
+use Illuminate\Support\Collection;
 
-class ManageDiscount extends BaseStripePage implements Forms\Contracts\HasForms
+class ListDiscount extends BaseStripePage
 {
-    use InteractsWithForms;
-    use InteractsWithActions;
+    protected static string $view = 'filament.pages.stripe.discount.list';
+    protected static ?string $slug = 'stripe/discounts';
 
-    protected static string $view = 'filament.pages.stripe.discount.manage';
-    protected static ?string $slug = 'stripe/discounts/{couponId}';
-
-    public ?string $couponId = null;
-    public bool $isEdit = false;
-    public bool $isEditing = false;
-
-    public array $formData = [
-        'name' => null,
-        'products' => [],
-        'discount_type' => 'percentage',
-        'value' => null,
-        'description' => null,
-    ];
-
-    public array $promoCodes = [];
+    public $user;
+    public Collection $records;
 
     public static function shouldRegisterNavigation(): bool
     {
         return false;
     }
 
-    public function mount(?string $couponId = null): void
+    public function mount(): void
     {
         parent::mount();
-
         if (! $this->stripeAvailable) {
             return;
         }
 
-        $this->couponId = $couponId;
-        $this->isEdit = $couponId !== null && $couponId !== 'create';
-
-        if ($this->isEdit) {
-            $this->loadCoupon();
-            $this->loadPromoCodes();
-            $this->isEditing = false;
-        } else {
-            $this->isEditing = true;
-        }
+        $this->user = Auth::user();
+        $this->records = $this->getCouponsWithDetails();
     }
 
-    public function form(Form $form): Form
+    /**
+     * Fetch Stripe coupons along with their promotion codes.
+     */
+    protected function getCouponsWithDetails(): Collection
     {
-        return $form
-            ->statePath('formData')
-            ->schema([
-                Forms\Components\Section::make('Discount Details')->schema([
+        $coupons = $this->stripeClient()->coupons->all(['limit' => 50]);
 
-                    Forms\Components\Grid::make(4)->schema([
-                        Forms\Components\TextInput::make('name')
-                            ->label('Name (appears on receipts)')
-                            ->required()
-                            ->disabled(fn () => $this->isEdit && ! $this->isEditing)
-                            ->columnSpan(2),
-                    ]),
-
-                    Forms\Components\Grid::make(4)->schema([
-                        Forms\Components\Select::make('products')
-                            ->label('Product(s)')
-                            ->multiple()
-                            ->searchable()
-                            ->preload()
-                            ->options(fn () => [
-                                'all' => 'All Products',
-                            ] + $this->getStripeProducts())
-                            ->disabled(fn () => $this->isEdit)
-                            ->columnSpan(2),
-                    ]),
-
-                    Forms\Components\Grid::make(3)->schema([
-                        Forms\Components\ToggleButtons::make('discount_type')
-                            ->label('Discount Type')
-                            ->options([
-                                'percentage' => 'Percentage',
-                                'fixed' => 'Fixed Amount',
-                            ])
-                            ->inline()
-                            ->disabled(fn () => $this->isEdit),
-
-                        Forms\Components\TextInput::make('value')
-                            ->label('Value')
-                            ->numeric()
-                            ->disabled(fn () => $this->isEdit),
-                    ]),
-
-                    Forms\Components\Textarea::make('description')
-                        ->label('Description (optional)')
-                        ->rows(4)
-                        ->disabled(fn () => $this->isEdit && ! $this->isEditing)
-                        ->columnSpanFull(),
-                ]),
-            ]);
+        return collect($coupons->data)
+            ->map(fn($coupon) => $this->mapCoupon($coupon))
+            ->filter() // remove nulls where promo codes were empty
+            ->values();
     }
 
-    protected function loadCoupon(): void
+    protected function mapCoupon($coupon): ?array
     {
-        $coupon = $this->stripeClient()->coupons->retrieve($this->couponId);
+        $promoCodes = $this->getPromotionCodes($coupon->id);
 
-        $productIds = isset($coupon->metadata->product_ids)
-            ? explode(',', $coupon->metadata->product_ids)
-            : ['all'];
-
-        $products = $this->getStripeProducts();
-
-        $this->formData = [
-            'name' => $coupon->name,
-            'discount_type' => $coupon->percent_off ? 'percentage' : 'fixed',
-            'value' => $coupon->percent_off ?? ($coupon->amount_off / 100),
-            'products' => $productIds,
-            'products_names' => implode(', ', array_map(fn ($id) => $products[$id] ?? $id, $productIds)),
-            'description' => $coupon->metadata->description ?? null,
+        return [
+            'coupon_id'       => $coupon->id,
+            'coupon_name'     => $coupon->name ?? $coupon->id,
+            'description'     => $coupon->metadata['description'] ?? null,
+            'products'        => $this->getCouponProducts($coupon),
+            'discount'        => $this->formatDiscount($coupon),
+            'promotion_codes' => $promoCodes,
         ];
-
-        $this->form->fill($this->formData);
     }
 
-    public function save(): void
+    protected function getCouponProducts($coupon): array
     {
-        $data = $this->formData;
-
-        if ($this->isEdit) {
-            $this->stripeClient()->coupons->update($this->couponId, [
-                'name' => $data['name'],
-                'metadata' => [
-                    'description' => $data['description'] ?? '',
-                ],
-            ]);
-
-            Notification::make()->title('Coupon updated')->success()->send();
-            $this->isEditing = false;
-            return;
+        if (empty($coupon->metadata['product_ids'])) {
+            return ['All products'];
         }
 
-        $couponData = [
-            'name' => $data['name'],
-            'duration' => 'once',
-            'metadata' => [
-                'description' => $data['description'] ?? '',
-            ],
-        ];
-
-        if (! in_array('all', $data['products'])) {
-            $couponData['applies_to'] = ['products' => $data['products']];
-            $couponData['metadata']['product_ids'] = implode(',', $data['products']);
-        }
-
-        if ($data['discount_type'] === 'percentage') {
-            $couponData['percent_off'] = (float) $data['value'];
-        } else {
-            $account = $this->stripeClient()->accounts->retrieve();
-            $couponData['amount_off'] = (int) ($data['value'] * 100);
-            $couponData['currency'] = $account->default_currency;
-        }
-
-        $coupon = $this->stripeClient()->coupons->create($couponData);
-
-        Notification::make()->title('Coupon created')->success()->send();
-        $this->redirect('/stripe/discounts/' . $coupon->id);
-    }
-
-    protected function getStripeProducts(): array
-    {
-        $products = $this->stripeClient()->products->all([
-            'active' => true,
-            'limit' => 100,
-        ]);
-
-        return collect($products->data)
-            ->mapWithKeys(fn ($product) => [$product->id => $product->name])
+        return collect(explode(',', $coupon->metadata['product_ids']))
+            ->map(fn($id) => $this->getProductName(trim($id)))
             ->toArray();
     }
 
-    protected function getStripeCustomers(): array
+    protected function getProductName(string $productId): string
     {
-        $customers = $this->stripeClient()->customers->all([
-            'limit' => 100,
+        try {
+            $product = $this->stripeClient()->products->retrieve($productId);
+            $type = $product->metadata->product_type ?? null;
+            return $type ? "{$product->name} - {$type}" : $product->name;
+        } catch (\Exception) {
+            return $productId;
+        }
+    }
+
+    protected function formatDiscount($coupon): string
+    {
+        if (!is_null($coupon->percent_off)) {
+            return "{$coupon->percent_off}% off";
+        }
+
+        // Fixed amount discount
+        if (!is_null($coupon->amount_off)) {
+            $currencySymbol = optional($this->user->corporatePartner)->currency_symbol ?? '$';
+
+            return $currencySymbol . number_format($coupon->amount_off / 100, 2) . " off";
+        }
+
+        return '—';
+    }
+
+    protected function getPromotionCodes(string $couponId): array
+    {
+        $promotionCodes = $this->stripeClient()->promotionCodes->all([
+            'coupon' => $couponId,
+            'limit'  => 50,
         ]);
 
-        return collect($customers->data)
-            ->mapWithKeys(fn ($customer) => [
-                $customer->id =>
-                    ($customer->name ?? 'No Name') .
-                    ' (' . ($customer->email ?? 'No Email') . ')',
-            ])
+        return collect($promotionCodes->data)
+            ->map(fn($promo) => $this->mapPromotionCode($promo))
+            ->values()
             ->toArray();
     }
 
-    protected function loadPromoCodes(): void
+    protected function mapPromotionCode($promo): array
     {
-        $promos = $this->stripeClient()->promotionCodes->all([
-            'coupon' => $this->couponId,
-            'limit' => 100,
-        ]);
+        $validFrom = Carbon::createFromTimestamp($promo->created);
+        $validTill = $promo->expires_at ? Carbon::createFromTimestamp($promo->expires_at) : null;
 
-        $this->promoCodes = collect($promos->data)->map(fn ($promo) => [
-            'id' => $promo->id,
-            'code' => $promo->code,
-            'active' => $promo->active,
-            'times_redeemed' => $promo->times_redeemed,
-            'max_redemptions' => $promo->max_redemptions,
-        ])->toArray();
+        $validity = $validTill
+            ? "Valid {$validFrom->format('M j, Y')} - {$validTill->format('M j, Y')}"
+            : "Valid from {$validFrom->format('M j, Y')}";
+
+        $isExpired = $promo->expires_at ? now()->timestamp > $promo->expires_at : false;
+        $usageText = $promo->max_redemptions ? "{$promo->times_redeemed}/{$promo->max_redemptions} used" : '';
+        
+        return [
+            'code'      => $promo->code,
+            'status'    => ($promo->active && ! $isExpired) ? 'Active' : 'Expired',
+            'validity'  => $validity,
+            'is_first'  => $promo->restrictions?->first_time_transaction ?? false,
+            'usage'     => $usageText,
+        ];
     }
 
-    public function createPromoCodeAction(): Actions\Action
+    public function getHeading(): string
     {
-        return Actions\Action::make('createPromoCodeAction')
-            ->label('Add Promo Code')
-            ->modalHeading('Add a Promo Code')
-            ->modalSubmitActionLabel('Finish')
-            ->modalWidth('lg')
-            ->form([
-
-                Forms\Components\TextInput::make('code')
-                    ->label('Code')
-                    ->required(),
-
-                Forms\Components\DatePicker::make('expires_at')
-                    ->label('Expire Date')
-                    ->native(false)
-                    ->nullable(),
-
-                Forms\Components\Select::make('customer_id')
-                    ->label('Restrict to Customer (Optional)')
-                    ->searchable()
-                    ->options(fn () => $this->getStripeCustomers())
-                    ->placeholder('All customers')
-                    ->nullable(),
-
-                Forms\Components\TextInput::make('max_redemptions')
-                    ->label('Total Limit')
-                    ->numeric()
-                    ->nullable(),
-
-                Forms\Components\Checkbox::make('first_purchase_only')
-                    ->label('Limit to first purchase'),
-            ])
-            ->action(function (array $data) {
-
-                $payload = [
-                    'promotion' => [
-                        'type' => 'coupon',
-                        'coupon' => $this->couponId,
-                    ],
-                    'code' => strtoupper($data['code']),
-                ];
-
-                if (! empty($data['expires_at'])) {
-                    $payload['expires_at'] = Carbon::parse($data['expires_at'])->timestamp;
-                }
-
-                if (! empty($data['max_redemptions'])) {
-                    $payload['max_redemptions'] = (int) $data['max_redemptions'];
-                }
-
-                if (! empty($data['customer_id'])) {
-                    $payload['customer'] = $data['customer_id'];
-                }
-
-                if (! empty($data['first_purchase_only'])) {
-                    $payload['restrictions'] = [
-                        'first_time_transaction' => true,
-                    ];
-                }
-
-                $this->stripeClient()->promotionCodes->create($payload);
-
-                Notification::make()->title('Promo code created')->success()->send();
-                $this->loadPromoCodes();
-            });
+        return __('stripe.payments');
     }
 }
