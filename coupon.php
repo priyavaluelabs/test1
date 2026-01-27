@@ -1,19 +1,25 @@
-<span
-    class="inline-flex items-center gap-2
-           px-4 py-2
-           rounded-full
-           text-sm font-semibold
-           bg-red-100
-           text-red-700">
+font-family: Inter;
+font-weight: 600;
+font-style: Semi Bold;
+font-size: 12px;
+leading-trim: NONE;
+line-height: 20px;
+letter-spacing: 0%;
+color: #444444
 
-    <span
-        class="flex items-center justify-center
-               w-6 h-6
-               rounded-full
-               border-2 border-red-700">
+<p class="mt-8">Note:</p><b>
+                
 
-        <x-heroicon-s-x-circle class="w-4 h-4 text-red-700" />
-    </span>
+font-family: Inter;
+font-weight: 400;
+font-style: Regular;
+font-size: 12px;
+leading-trim: NONE;
+line-height: 20px;
+letter-spacing: 0%;
+color: #444444
 
-    Not Verified
-</span>
+ <p class="text-xs text-gray-500 mt-10 ">
+                            We automatically sync your bio and photo from Glofox.
+                            If you would like to make updates, please do so in Glofox.
+                        </p>
