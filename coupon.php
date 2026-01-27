@@ -1,36 +1,64 @@
 <?php
 
-namespace App\Services;
+namespace App\Filament\Pages;
 
-use App\Models\Club;
-use App\Models\FodUserRole;
-use App\Models\User;
+use Filament\Pages\Page;
+use Illuminate\Support\Facades\Auth;
+use App\Services\Stripe\StripeService;
+use Stripe\StripeClient;
+use App\Filament\Enum\Role;
 
-class ClubGlofoxStatusService
+abstract class BaseStripePage extends Page
 {
-    public function getForUser(User $user): array
+    public bool $stripeAvailable = false;
+    public ?string $stripeErrorMessage = null;
+
+    protected ?StripeClient $stripe = null;
+
+    public static function canAccess(): bool
     {
-        $accessibleClubIds = $user->getAccessibleClubs();
+        $user = Auth::user();
+        return $user && $user->hasRole(Role::ZoneInstructor);
+    }
 
-        // Get club titles keyed by ID
-        $clubs = Club::whereIn('id', $accessibleClubIds)
-            ->pluck('title', 'id');
+    public function mount(): void
+    {
+        $this->validateStripe();
+    }
 
-        // Get user roles with glofox status
-        $userRoles = FodUserRole::where('user_id', $user->id)
-            ->whereIn('club_id', $accessibleClubIds)
-            ->get(['club_id', 'glofox_verified_at']);
+    protected function validateStripe(): void
+    {
+        $stripeService = app(StripeService::class);
 
-        return $userRoles->map(function ($role) use ($clubs) {
-            return [
-                'club_id'     => $role->club_id,
-                'club_title'  => $clubs[$role->club_id] ?? '—',
-                'is_verified' => ! is_null($role->glofox_verified_at),
-                'verified_at' => $role->glofox_verified_at,
-            ];
-        })->values()->toArray();
+        $this->stripe = $stripeService->client();
+
+        if (! $this->stripe) {
+            $this->failStripe(__('stripe.invalid_stripe_key'));
+            return;
+        }
+
+        try {
+            $this->stripe->accounts->retrieve();
+            $this->stripeAvailable = true;
+        } catch (\Throwable) {
+            $this->failStripe(__('stripe.invalid_stripe_key'));
+        }
+    }
+
+    protected function stripeClient(): ?StripeClient
+    {
+        if ($this->stripe) {
+            return $this->stripe;
+        }
+
+        $stripeService = app(StripeService::class);
+
+        return $this->stripe = $stripeService->client();
+    }
+
+    protected function failStripe(string $message): void
+    {
+        $this->stripeAvailable = false;
+        $this->stripeErrorMessage = $message;
     }
 }
-
-
-$this->clubsWithGlofoxStatus = $clubService->getForUser($this->user);
