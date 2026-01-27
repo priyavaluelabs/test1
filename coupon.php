@@ -1,9 +1,15 @@
-<span class="text-sm font-semibold leading-5 text-gray-700">
-    Your Account
-</span>
+font-family: Inter;
+font-weight: 600;
+font-style: Semi Bold;
+font-size: Label MD/labelMdFontSize;
+leading-trim: NONE;
+line-height: 20px;
+letter-spacing: 0%;
 
 
-<span class="inline-flex items-center rounded-lg bg-gray-100 px-3 py-1.5
-             text-xs leading-5 text-gray-700">
-    {{ $user->email }}
-</span>
+I need above css for 
+
+<span class="text-sm font-medium text-gray-700 px-3">
+                                        {{ $club['club_title'] }}
+                                    </span>
+
