@@ -1,53 +1,27 @@
 <?php
 
-namespace App\Filament\Pages;
+namespace App\Services;
 
-use App\Models\FodUserRole;
 use App\Models\Club;
-use App\Filament\Pages\BaseStripePage;
-use Illuminate\Support\Facades\Auth;
+use App\Models\FodUserRole;
+use App\Models\User;
 
-class StripeOnboarding extends BaseStripePage
+class ClubGlofoxStatusService
 {
-    protected static string $view = 'filament.pages.stripe.onboarding';
-    protected static ?string $slug = 'stripe/onboarding';
-
-    public ?string $accountId = null;
-    public ?string $type = 'account-onboarding';
-    public ?string $clientSecret = null;
-    public bool $showOnboarding = false;
-
-    public $user;
-    public array $clubsWithGlofoxStatus = [];
-
-    public static function shouldRegisterNavigation(): bool
+    public function getForUser(User $user): array
     {
-        return false;
-    }
+        $accessibleClubIds = $user->getAccessibleClubs();
 
-    public function continue()
-    {
-        $this->showOnboarding = true;
-    }
-
-    public function mount(): void
-    {
-        parent::mount();
-        if (! $this->stripeAvailable) {
-            return;
-        }
-
-        $this->user = Auth::user();
-
-        // Get club name with glofox verified at
-        $clubs = Club::whereIn('id', $this->user->getAccessibleClubs())
+        // Get club titles keyed by ID
+        $clubs = Club::whereIn('id', $accessibleClubIds)
             ->pluck('title', 'id');
 
-        $userRoles = FodUserRole::where('user_id', $this->user->id)
-            ->whereIn('club_id', $this->user->getAccessibleClubs())
+        // Get user roles with glofox status
+        $userRoles = FodUserRole::where('user_id', $user->id)
+            ->whereIn('club_id', $accessibleClubIds)
             ->get(['club_id', 'glofox_verified_at']);
 
-        $this->clubsWithGlofoxStatus = $userRoles->map(function ($role) use ($clubs) {
+        return $userRoles->map(function ($role) use ($clubs) {
             return [
                 'club_id'     => $role->club_id,
                 'club_title'  => $clubs[$role->club_id] ?? '—',
@@ -55,49 +29,8 @@ class StripeOnboarding extends BaseStripePage
                 'verified_at' => $role->glofox_verified_at,
             ];
         })->values()->toArray();
-
-
-        if (! $this->user->is_onboarded) {
-            if ($this->user->stripe_account_id) {
-                $this->accountId = $this->user->stripe_account_id;
-
-                $session = $this->stripeClient()->accountSessions->create([
-                    'account' => $this->accountId,
-                    'components' => [
-                        'account_onboarding' => ['enabled' => true],
-                    ],
-                ]);
-
-                $this->clientSecret = $session->client_secret;
-            } else {
-                $account = $this->stripeClient()->accounts->create([
-                    'type'  => 'express',
-                    'email' => $this->user->email,
-                    'capabilities' => [
-                        'card_payments' => ['requested' => true],
-                        'transfers'     => ['requested' => true],
-                    ],
-                ]);
-
-                $this->accountId = $account->id;
-
-                $session = $this->stripeClient()->accountSessions->create([
-                    'account' => $this->accountId,
-                    'components' => [
-                        'account_onboarding' => ['enabled' => true],
-                    ],
-                ]);
-
-                $this->clientSecret = $session->client_secret;
-                $this->user->update([
-                    'stripe_account_id' => $this->accountId,
-                ]);
-            }
-        }
-    }
-
-    public function getHeading(): string
-    {
-        return __('stripe.personal_training_onboarding');
     }
 }
+
+
+$this->clubsWithGlofoxStatus = $clubService->getForUser($this->user);
