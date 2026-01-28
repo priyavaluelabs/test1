@@ -1,34 +1,60 @@
-use Illuminate\Support\Facades\Auth;
-use App\Services\Stripe\ClubGlofoxStatusService;
-use App\Filament\Enum\Role;
+ public function applyPromoCode(PTBillingApplyPromocodeRequest $request)
+    {
+        $user = parent::getAuth();
 
-public static function canAccess(): bool
-{
-    $user = Auth::user();
+        $this->logger->info(
+            "promo_code.apply",
+            "Applying promo code",
+            [
+                'trainer_id' => $this->trainer->id,
+                'product_id'  => $request->product_id,
+                'promo_code' => $request->promo_code,
+                'invoice_id'  => $request->invoice_id,
+            ],
+            $user->id ?? null
+        );
 
-    // Basic access check
-    if (! $user || ! $user->hasRole(Role::ZoneInstructor)) {
-        return false;
+        try {
+            $data = [
+                'stripe_account_id' => $this->trainer->stripe_account_id,
+                'promo_code'        => $request->promo_code,
+                'product_id'        => $request->product_id,
+                'invoice_id'        => $request->invoice_id,
+            ];
+
+            // Only validate promo & calculate discount
+            $response = $this->customerService->applyPromoCode($data);
+
+            $this->logger->info(
+                "promo_code.apply.success",
+                "Promo code applied successfully",
+                [],
+                $user->id ?? null
+            );
+
+            $this->logger->flush();
+
+            return parent::respond([
+                'status'        => 'success',
+                'promo_details' => $response['promo_details'],
+                'currency'      => $this->getCurrencySymbol($this->trainer)
+            ], Response::HTTP_OK);
+
+        } catch (HttpResponseException $e) {
+            throw $e;
+        } catch (\Exception $e) {
+            $this->logger->error(
+                "promo_code.apply.error",
+                $e->getMessage(),
+                [],
+                $user->id ?? null
+            );
+
+            $this->logger->flush();
+
+            return parent::respondError(
+                __('klyp.nomergy::fod.stripe_unexpected_error'),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
     }
-
-    // Stripe onboarding does NOT require Glofox verification
-    if (static::isStripeOnboardingRoute()) {
-        return true;
-    }
-
-    // All other routes require Glofox verification
-    return static::isGlofoxVerified($user);
-}
-
-protected static function isStripeOnboardingRoute(): bool
-{
-    return request()->is('*/stripe/onboarding');
-}
-
-protected static function isGlofoxVerified($user): bool
-{
-    $clubs = app(ClubGlofoxStatusService::class)->getForUser($user);
-
-    return collect($clubs)
-        ->every(fn ($club) => (bool) ($club['is_verified'] ?? false));
-}
