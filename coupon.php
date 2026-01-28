@@ -1,12 +1,34 @@
+use Illuminate\Support\Facades\Auth;
+use App\Services\Stripe\ClubGlofoxStatusService;
+use App\Filament\Enum\Role;
+
 public static function canAccess(): bool
-    {
-        $user = Auth::user();
+{
+    $user = Auth::user();
 
-        // redirect to not found if they are not verified in glofox
-        $clubs = app(ClubGlofoxStatusService::class)
-            ->getForUser($user);
-        $isGlofoxVerified = collect($clubs)
-            ->every(fn ($club) => $club['is_verified'] === true);
-
-        return $user && $user->hasRole(Role::ZoneInstructor);
+    // Basic access check
+    if (! $user || ! $user->hasRole(Role::ZoneInstructor)) {
+        return false;
     }
+
+    // Stripe onboarding does NOT require Glofox verification
+    if (static::isStripeOnboardingRoute()) {
+        return true;
+    }
+
+    // All other routes require Glofox verification
+    return static::isGlofoxVerified($user);
+}
+
+protected static function isStripeOnboardingRoute(): bool
+{
+    return request()->is('*/stripe/onboarding');
+}
+
+protected static function isGlofoxVerified($user): bool
+{
+    $clubs = app(ClubGlofoxStatusService::class)->getForUser($user);
+
+    return collect($clubs)
+        ->every(fn ($club) => (bool) ($club['is_verified'] ?? false));
+}
