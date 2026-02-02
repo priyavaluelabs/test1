@@ -1,507 +1,220 @@
 <?php
 
-namespace Klyp\Nomergy\Http\Controllers\Stripe;
+namespace App\Filament\Pages;
 
-use Klyp\Nomergy\Http\Controllers\ApiController;
-use Klyp\Nomergy\Http\Traits\HasCurrencySymbolTrait;
-use Klyp\Nomergy\Services\Stripe\PTBillingCustomerService;
-use Klyp\Nomergy\Services\Stripe\PTBillingLoggerService;
-use Klyp\Nomergy\Http\Requests\PTBillingPaymentHistoryByCustomerRequest;
-use Klyp\Nomergy\Http\Requests\PTBillingCreateCustomerRequest;
-use Klyp\Nomergy\Http\Requests\PTBillingPaymentIntentRequest;
-use Klyp\Nomergy\Http\Requests\PTBillingInvoiceCreateRequest;
-use Klyp\Nomergy\Http\Requests\PTBillingApplyPromocodeRequest;
-use Klyp\Nomergy\Http\Requests\PTBillingRemovePromocodeRequest;
-use Klyp\Nomergy\Http\Requests\PaymentHistoryExportRequest;
-use Illuminate\Http\Exceptions\HttpResponseException;
-use Stripe\Exception\InvalidRequestException;
-use Klyp\Nomergy\Jobs\SendStripeUserPaymentHistory;
-use Symfony\Component\HttpFoundation\Response;
-use Klyp\Nomergy\Models\UserPortal;
+use App\Filament\Pages\BaseStripePage;
+use Illuminate\Support\Facades\Auth;
+use App\Jobs\SendTrainerOnboardedMail;
+use App\Filament\Enum\StripeAccountStatus;
+use App\Models\Club;
 
-class ApiPTBillingCustomerController extends ApiController
+class StripeOnboarding extends BaseStripePage
 {
-    use HasCurrencySymbolTrait;
+    protected static string $view = 'filament.pages.stripe.onboarding';
+    protected static ?string $slug = 'stripe/onboarding';
 
-    /**
-     * Customer service instance
-     *
-     * @var PTBillingCustomerService
-     */
-    protected $customerService;
+    public ?string $accountId = null;
+    public ?string $type = 'account-onboarding';
+    public ?string $clientSecret = null;
 
-    /**
-     * Trainer instance (Stripe-connected user)
-     *
-     * @var UserPortal|null
-     */
-    protected $trainer;
+    public $stripeStatus;
+    public array $currentlyDue = [];
+    public ?\App\Models\User $user = null;
 
-    /**
-     * Stripe logger instance.
-     * 
-     * @var logger
-     */
-    protected $logger;
-
-    /**
-     * Constructor to inject dependencies.
-     *
-     * @param PTBillingCustomerService $customerService Service responsible for interacting with stripe customer API.
-     * @param PTBillingLoggerService $logger Service used to log stripe events, errors, and system actions.
-     *
-     */
-    public function __construct(
-        PTBillingCustomerService $customerService,
-        PTBillingLoggerService $logger
-    ) {
-        $this->trainer = UserPortal::find(request()->trainer_id);
-        $this->customerService = $customerService;
-        $this->logger = $logger;
+    public static function shouldRegisterNavigation(): bool
+    {
+        return false;
     }
 
-    /**
-     * Retrieve payment history list for customer.
-     *
-     * @param  PTBillingPaymentHistoryByCustomerRequest  $request
-     * @return \Illuminate\Http\JsonResponse
-     *
-     */
-    public function getPaymentHistoryByCustomer(PTBillingPaymentHistoryByCustomerRequest $request)
+    public function mount(): void
     {
-        $user = parent::getAuth();
-        
-        $this->logger->info(
-            "payments.fetch",
-            "Fetching payment intents",
-            ['limit'  => $request->limit ? $request->limit : 50],
-            $user->id ?? null
-        );
-        
-        try {
-            $data = [
-                'limit' => $request->limit ? $request->limit : 50,
-                'user_id' => $user->id
-            ];
+        parent::mount();
+        if (! $this->stripeAvailable) {
+            return;
+        }
 
-            $paymentHistoryData = $this->customerService->getPaymentHistory($data);
-            $this->logger->info(
-                "payments.fetch.success",
-                "Payment intents fetched",
-                ['count' => count($paymentHistoryData ?? [])],
-                $user->id ?? null
-            );
-            $this->logger->flush();
+        $this->user = Auth::user();
 
-            return parent::respond([
-                'status' => 'success',
-                'payments' => $paymentHistoryData
-            ], Response::HTTP_OK);
+        $clubData = Club::whereIn('id', $this->user->getAccessibleClubs())->get();
+        $clubIds   = $clubData->pluck('id')->implode(',');
+        $clubNames = $clubData->pluck('title')->implode(',');
 
-        } catch (\Exception $e) {
-            $this->logger->error(
-                "payments.fetch.error",
-                $e->getMessage(),
-                [],
-                $user->id ?? null
-            );
-            $this->logger->flush();
+        if (! $this->user->is_onboarded) {
+            if ($this->user->stripe_account_id) {
+                $this->accountId = $this->user->stripe_account_id;
 
-            return parent::respondError(
-                __('klyp.nomergy::fod.stripe_unexpected_error'),
-                Response::HTTP_INTERNAL_SERVER_ERROR
-            );
+                $session = $this->stripeClient()->accountSessions->create([
+                    'account' => $this->accountId,
+                    'components' => [
+                        'account_onboarding' => ['enabled' => true],
+                    ],
+                ]);
+
+                $this->clientSecret = $session->client_secret;
+            } else {
+                $account = $this->stripeClient()->accounts->create([
+                    'email' => $this->user->email,
+                    'capabilities' => [
+                        'card_payments' => ['requested' => true],
+                        'transfers'     => ['requested' => true],
+                    ],
+                    'metadata' => [
+                        'club_ids'   => $clubIds,
+                        'club_names' => $clubNames,
+                    ],
+                ]);
+
+                $this->accountId = $account->id;
+
+                $session = $this->stripeClient()->accountSessions->create([
+                    'account' => $this->accountId,
+                    'components' => [
+                        'account_onboarding' => ['enabled' => true],
+                    ],
+                ]);
+
+                $this->clientSecret = $session->client_secret;
+                $this->user->update([
+                    'stripe_account_id' => $this->accountId,
+                ]);
+            }
+        }
+
+        // Get stripe account status
+        $account = $this->stripeClient()->accounts->retrieve($this->user->stripe_account_id);
+        $this->currentlyDue = $account->requirements->currently_due;
+        $this->stripeStatus = $this->resolveStripeAccountStatus($account);
+        if ($this->stripeStatus === StripeAccountStatus::COMPLETE) {
+            $this->user->update([
+                'is_onboarded' => true,
+                'onboarded_at' => now(),
+            ]);
+            SendTrainerOnboardedMail::dispatch($this->user);
         }
     }
 
-    /**
-     * Create a customer in Stripe account.
-     *
-     * @param  PTBillingCreateCustomerRequest $request
-     * @return \Illuminate\Http\JsonResponse
-     * 
-     */
-    public function createCustomer(PTBillingCreateCustomerRequest $request)
+    public function getHeading(): string
     {
-        $user = parent::getAuth();
-
-        $this->logger->info(
-            "customer.create",
-            "Creating customer",
-            [
-                'trainer_id' => $this->trainer->id
-            ],
-            $user->id ?? null
-        );
-
-        try {
-            $data = [
-                'user_id' => $user->id,
-                'name' => $user->full_name ? $user->full_name : $user->first_name . ' ' . $user->last_name,
-                'email' => $user->email,
-                'stripe_account_id' => $this->trainer->stripe_account_id,
-            ];
-
-            $customerId = $this->customerService->createCustomer($data);
-
-            $this->logger->info(
-                "customer.create.success",
-                "Customer created on Stripe",
-                ['customer_id' => $customerId],
-                $user->id ?? null
-            );
-
-            $this->logger->flush();
-
-            return parent::respond([
-                'status' => 'success',
-                'customer_id' => $customerId
-            ], Response::HTTP_OK);
-
-        } catch (\Exception $e) {
-            $this->logger->error(
-                "customer.create.error",
-                $e->getMessage(),
-                [],
-                $user->id ?? null
-            );
-            $this->logger->flush();
-
-            return parent::respondError(
-                __('klyp.nomergy::fod.stripe_unexpected_error'),
-                Response::HTTP_INTERNAL_SERVER_ERROR
-            );
-        }
+        return __('stripe.personal_training_onboarding');
     }
 
-    /**
-     * Generate Invoice Id.
-     * 
-     * @param PTBillingInvoiceCreateRequest $request
-     * @return \Illuminate\Http\JsonResponse
-     */
-    public function generateInvoiceId(PTBillingInvoiceCreateRequest $request)
+    protected function resolveStripeAccountStatus(object $account): StripeAccountStatus
     {
-        $user = parent::getAuth();
+        $requirement = $account->requirements ?? null;
 
-        $this->logger->info(
-            "generate.invoice",
-            "Generate invoice id",
-            [
-                'trainer_id' => $this->trainer->id,
-                'customer_id' => $request->customer_id,
-                'product_id'  => $request->product_id,
-            ],
-            $user->id ?? null
-        );
-
-        try {
-            $data = [
-                'stripe_account_id' => $this->trainer->stripe_account_id,
-                'product_id'        => $request->product_id,
-                'customer_id'       => $request->customer_id,
-            ];
-
-            // Generate invoice id
-            $response = $this->customerService->generateInvoiceId($data);
-
-            $this->logger->info(
-                "generate.invoice.success",
-                "Generate invoice id successfully",
-                [],
-                $user->id ?? null
-            );
-
-            $this->logger->flush();
-
-            return parent::respond([
-                'status'        => 'success',
-                'invoice_id' => $response['invoice_id'],
-            ], Response::HTTP_OK);
-
-        } catch (InvalidRequestException $e) {
-            $this->logger->warning(
-                "generate.invoice.validation_failed",
-                $e->getMessage(),
-                [],
-                $user->id ?? null
-            );
-
-            $this->logger->flush();
-    
-            return parent::respondError(
-                $e->getMessage(),
-                Response::HTTP_BAD_REQUEST
-            );
-        } catch (\Exception $e) {
-            $this->logger->error(
-                "generate.invoice.error",
-                $e->getMessage(),
-                [],
-                $user->id ?? null
-            );
-
-            $this->logger->flush();
-
-            return parent::respondError(
-                __('klyp.nomergy::fod.stripe_unexpected_error'),
-                Response::HTTP_UNPROCESSABLE_ENTITY
-            );
+        // Rejected
+        if (
+            isset($requirement->disabled_reason) &&
+            in_array($requirement->disabled_reason, [
+                'rejected.fraud',
+                'rejected.listed',
+                'rejected.terms_of_service',
+                'rejected.other',
+            ])
+        ) {
+            return StripeAccountStatus::REJECTED;
         }
-    }
 
-    /**
-     * Apply promo code and return discount details.
-     * 
-     * @param PTBillingApplyPromocodeRequest $request
-     * @return \Illuminate\Http\JsonResponse
-     */
-    public function applyPromoCode(PTBillingApplyPromocodeRequest $request)
-    {
-        $user = parent::getAuth();
-
-        $this->logger->info(
-            "promo_code.apply",
-            "Applying promo code",
-            [
-                'trainer_id' => $this->trainer->id,
-                'product_id'  => $request->product_id,
-                'promo_code' => $request->promo_code,
-                'invoice_id'  => $request->invoice_id,
-            ],
-            $user->id ?? null
-        );
-
-        try {
-            $data = [
-                'stripe_account_id' => $this->trainer->stripe_account_id,
-                'promo_code'        => $request->promo_code,
-                'product_id'        => $request->product_id,
-                'invoice_id'        => $request->invoice_id,
-            ];
-
-            // Only validate promo & calculate discount
-            $response = $this->customerService->applyPromoCode($data);
-
-            $this->logger->info(
-                "promo_code.apply.success",
-                "Promo code applied successfully",
-                [],
-                $user->id ?? null
-            );
-
-            $this->logger->flush();
-
-            return parent::respond([
-                'status'        => 'success',
-                'promo_details' => $response['promo_details'],
-                'currency'      => $this->getCurrencySymbol($this->trainer)
-            ], Response::HTTP_OK);
-
-        } catch (InvalidRequestException $e) {
-            $this->logger->warning(
-                "promo_code.apply.validation_failed",
-                $e->getMessage(),
-                [],
-                $user->id ?? null
-            );
-
-            $this->logger->flush();
-    
-            return parent::respondError(
-                $e->getMessage(),
-                Response::HTTP_BAD_REQUEST
-            );
-        } catch (HttpResponseException $e) {
-            throw $e;
-        } catch (\Exception $e) {
-            $this->logger->error(
-                "promo_code.apply.error",
-                $e->getMessage(),
-                [],
-                $user->id ?? null
-            );
-
-            $this->logger->flush();
-
-            return parent::respondError(
-                __('klyp.nomergy::fod.stripe_unexpected_error'),
-                Response::HTTP_UNPROCESSABLE_ENTITY
-            );
+        // Pending
+        if ($requirement?->disabled_reason === 'requirements.pending_verification') {
+            return StripeAccountStatus::PENDING;
         }
-    }
 
-    /**
-     * Remove applied promo code from invoice.
-     *
-     * @param PTBillingRemovePromocodeRequest $request
-     * @return \Illuminate\Http\JsonResponse
-     */
-    public function removePromoCode(PTBillingRemovePromocodeRequest $request)
-    {
-        $user = parent::getAuth();
-
-        $this->logger->info(
-            "promo_code.remove",
-            "Removing promo code",
-            [
-                'trainer_id'  => $this->trainer->id,
-                'invoice_id'  => $request->invoice_id,
-            ],
-            $user->id ?? null
-        );
-
-        try {
-            $data = [
-                'stripe_account_id' => $this->trainer->stripe_account_id,
-                'invoice_id'        => $request->invoice_id,
-            ];
-
-            $this->customerService->removePromoCode($data);
-
-            $this->logger->info(
-                "promo_code.remove.success",
-                "Promo code removed successfully",
-                [],
-                $user->id ?? null
-            );
-
-            $this->logger->flush();
-
-            return parent::respond([
-                'status'        => 'success',
-            ], Response::HTTP_OK);
-
-        } catch (InvalidRequestException $e) {
-            $this->logger->warning(
-                "promo_code.remove.validation_failed",
-                $e->getMessage(),
-                [],
-                $user->id ?? null
-            );
-
-            $this->logger->flush();
-    
-            return parent::respondError(
-                $e->getMessage(),
-                Response::HTTP_BAD_REQUEST
-            );
-        } catch (\Exception $e) {
-            $this->logger->error(
-                "promo_code.remove.error",
-                $e->getMessage(),
-                [],
-                $user->id ?? null
-            );
-
-            $this->logger->flush();
-
-            return parent::respondError(
-                __('klyp.nomergy::fod.stripe_unexpected_error'),
-                Response::HTTP_UNPROCESSABLE_ENTITY
-            );
+        // Restricted
+        if (
+            ! empty($requirement?->currently_due) &&
+            ($account->payouts_enabled === false || $account->charges_enabled === false)
+        ) {
+            return StripeAccountStatus::RESTRICTED;
         }
-    }
 
-    /**
-     * Create a Stripe payment intent for payment.
-     *
-     * @param PTBillingPaymentIntentRequest $request
-     * @return \Illuminate\Http\JsonResponse
-     * 
-     */
-    public function createPaymentIntent(PTBillingPaymentIntentRequest $request)
-    {
-        $user = parent::getAuth();
-
-        $this->logger->info(
-            "payment_intent.create",
-            "Creating payment intent",
-            [
-                'trainer_id'  => $this->trainer->id,
-                'customer_id' => $request->customer_id,
-                'product_id'  => $request->product_id,
-                'invoice_id'  => $request->invoice_id, 
-            ],
-            $user->id ?? null
-        );
-
-        try {
-            $data = [
-                'product_id' => $request->product_id,
-                'customer_id' => $request->customer_id,
-                'trainer_name' => $this->trainer->first_name.  ' ' . $this->trainer->last_name,
-                'stripe_account_id' => $this->trainer->stripe_account_id,
-                'invoice_id'  => $request->invoice_id,
-            ];
-
-            $paymentSheetAndEphemeralData = $this->customerService->createPaymentIntent($data);
-
-            $this->logger->info(
-                "payment_intent.create.success",
-                "Payment intent created",
-                [
-                    'payment_intent_id' => $paymentSheetAndEphemeralData['payment_intent']['id']
-                ],
-                $user->id ?? null
-            );
-
-            $this->logger->flush();
-
-            return parent::respond([
-                'status' => 'success',
-                'payment_intent' => $paymentSheetAndEphemeralData['payment_intent']['id'],
-                'client_secret'  => $paymentSheetAndEphemeralData['payment_intent']['client_secret'],
-                'ephemeral_key'  => $paymentSheetAndEphemeralData['ephemeral_key'],
-            ], Response::HTTP_OK);
-
-        } catch (InvalidRequestException $e) {
-            $this->logger->warning(
-                "payment_intent.create.validation_failed",
-                $e->getMessage(),
-                [],
-                $user->id ?? null
-            );
-
-            $this->logger->flush();
-    
-            return parent::respondError(
-                $e->getMessage(),
-                Response::HTTP_BAD_REQUEST
-            );
-        } catch (\Exception $e) {
-            $this->logger->error("payment_intent.create.error",
-                $e->getMessage(), 
-                [],
-                $user->id ?? null
-            );
-            $this->logger->flush();
-
-            return parent::respondError(
-                __('klyp.nomergy::fod.stripe_unexpected_error'),
-                Response::HTTP_INTERNAL_SERVER_ERROR
-            );
+        // Restricted soon
+        if (
+            ! empty($requirement?->currently_due) &&
+            ! empty($requirement?->current_deadline)
+        ) {
+            return StripeAccountStatus::RESTRICTED_SOON;
         }
-    }
 
-    /**
-     * Export customer's Stripe payment history via email.
-     *
-     * @param PaymentHistoryExportRequest $request
-     * @return \Illuminate\Http\JsonResponse
-     * 
-     */
-    public function export(PaymentHistoryExportRequest $request)
-    {
-        $user  = parent::getAuth();
-        $email = $request->filled('email') ? $request->email : $user->email;
-        $limit = $request->filled('limit') ? $request->limit : 50;
+        // Enabled
+        if (
+            ! empty($requirement?->eventually_due) &&
+            $account->payouts_enabled === true &&
+            $account->charges_enabled === true &&
+            empty($requirement?->current_deadline)
+        ) {
+            return StripeAccountStatus::ENABLED;
+        }
 
-        SendStripeUserPaymentHistory::dispatch($user->id, $email, $limit);
+        // Complete
+        if (
+            empty($requirement?->eventually_due) &&
+            $account->payouts_enabled === true &&
+            $account->charges_enabled === true
+        ) {
+            return StripeAccountStatus::COMPLETE;
+        }
 
-        return parent::respond([
-            'status'   => 'success',
-            'email'    => __('klyp.nomergy::fod.sending_stripe_payment_history'). $email
-        ]);
+        return StripeAccountStatus::UNKNOWN;
     }
 }
+
+
+
+===========
+<x-filament-panels::page>
+    <div class="filament-tables-container 
+        rounded-xl border
+        border-gray-300
+        bg-white shadow-sm
+        ">
+        <x-payment-tab />
+    </div>
+    @if (! $stripeAvailable)
+        <x-stripe.configuration-error :stripeErrorMessage="$stripeErrorMessage"/>
+    @else
+        @vite('resources/js/stripe-dashboard.js')
+        <div class="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
+            <div class="p-6 space-y-4">
+                @if($stripeStatus && )
+                    @php
+                        // Map semantic color to Tailwind bg/border/text classes
+                        $semanticColors = [
+                            'success' => ['bg' => 'bg-green-100', 'border' => 'border-green-300', 'text' => 'text-green-800'],
+                            'info'    => ['bg' => 'bg-blue-100', 'border' => 'border-blue-300', 'text' => 'text-blue-800'],
+                            'warning' => ['bg' => 'bg-yellow-100', 'border' => 'border-yellow-300', 'text' => 'text-yellow-800'],
+                            'danger'  => ['bg' => 'bg-red-100', 'border' => 'border-red-300', 'text' => 'text-red-800'],
+                            'gray'    => ['bg' => 'bg-red-100', 'border' => 'border-red-300', 'text' => 'text-red-800'],
+                        ];
+
+                        $color = $semanticColors[$stripeStatus->color()] ?? $semanticColors['gray'];
+                    @endphp
+
+                    <div class="p-4 {{ $color['bg'] }} {{ $color['border'] }} {{ $color['text'] }} rounded-lg">
+                        <strong>{{ $stripeStatus->title() }}</strong><br>
+                        {{ $stripeStatus->message() }}
+                    </div>
+                @endif
+                @if(! $user->is_onboarded)
+                    <!-- Loader -->
+                    <div id="onboarding-loader" class="flex items-center justify-center h-full">
+                        <x-filament::loading-indicator class="h-12 w-12 text-primary-600" />
+                    </div>
+
+                    <div id="onboarding-container"  
+                        data-settings="{{ json_encode([
+                            'publishableKey' => $stripePublicKey,
+                            'clientSecret' => $clientSecret,
+                            'type' => $type,
+                            'containerId' => 'onboarding-container',
+                            'loaderId' => 'onboarding-loader',
+                        ]) }}">
+                    </div>
+                @endif
+            </div>
+        </div>
+    @endif
+</x-filament-panels::page>
+
+
+    
