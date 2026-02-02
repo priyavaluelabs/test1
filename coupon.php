@@ -1,19 +1,71 @@
-<x-filament-panels::page>
-    <div class="filament-tables-container 
-        rounded-xl border
-        border-gray-300
-        bg-white shadow-sm
-        ">
-        <x-payment-tab />
-    </div>
-    @if (! $stripeAvailable)
-        <x-stripe.configuration-error :stripeErrorMessage="$stripeErrorMessage"/>
-    @else
-        @vite('resources/js/stripe-dashboard.js')
-        <div class="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
-            <div class="p-6 space-y-4">
-                @if($stripeStatus && empty($currentlyDue))
-                    @php
+<?php
+
+namespace App\Filament\Enum;
+
+enum StripeAccountStatus: string
+{
+    case PENDING         = 'pending';
+    case RESTRICTED      = 'restricted';
+    case RESTRICTED_SOON = 'restricted_soon';
+    case ENABLED         = 'enabled';
+    case COMPLETE        = 'complete';
+    case REJECTED        = 'rejected';
+    case UNKNOWN         = 'unknown';
+
+    public function title(): string
+    {
+        return match ($this) {
+            self::PENDING         => 'Onboarding in Progress',
+            self::RESTRICTED      => 'Account Restricted',
+            self::RESTRICTED_SOON => 'Action Required Soon',
+            self::ENABLED         => 'Account Enabled',
+            self::COMPLETE        => 'Onboarding Completed!',
+            self::REJECTED        => 'Account Not Approved',
+            self::UNKNOWN         => 'Account Status Unknown',
+        };
+    }
+
+    public function message(): string
+    {
+        return match ($this) {
+            self::PENDING =>
+                'Your account details are under review. Please complete the pending verification steps to continue.',
+
+            self::RESTRICTED =>
+                'Your Stripe account has some pending requirements. Payouts and charges are temporarily unavailable until these are resolved.',
+
+            self::RESTRICTED_SOON =>
+                'Additional information is needed to keep your Stripe account active. Please complete the required steps before the deadline.',
+
+            self::ENABLED =>
+                'Your Stripe account is active. Some additional details may be required later, but payouts and charges are currently enabled.',
+
+            self::COMPLETE =>
+                'Your Stripe account is active and ready to use.',
+
+            self::REJECTED =>
+                'Your Stripe account could not be approved. Please contact support for more information.',
+
+            self::UNKNOWN =>
+                'We are unable to determine your Stripe account status at the moment.',
+        };
+    }
+
+    public function color(): string
+    {
+        return match ($this) {
+            self::COMPLETE        => 'success',
+            self::ENABLED         => 'info',
+            self::PENDING,
+            self::RESTRICTED_SOON => 'warning',
+            self::RESTRICTED,
+            self::REJECTED        => 'danger',
+            self::UNKNOWN         => 'danger',
+        };
+    }
+}
+
+@php
                         // Map semantic color to Tailwind bg/border/text classes
                         $semanticColors = [
                             'success' => ['bg' => 'bg-green-100', 'border' => 'border-green-300', 'text' => 'text-green-800'],
@@ -25,194 +77,3 @@
 
                         $color = $semanticColors[$stripeStatus->color()] ?? $semanticColors['gray'];
                     @endphp
-
-                    <div class="p-4 {{ $color['bg'] }} {{ $color['border'] }} {{ $color['text'] }} rounded-lg">
-                        <strong>{{ $stripeStatus->title() }}</strong><br>
-                        {{ $stripeStatus->message() }}
-                    </div>
-                @endif
-                @if(! $user->is_onboarded)
-                    <!-- Loader -->
-                    <div id="onboarding-loader" class="flex items-center justify-center h-full">
-                        <x-filament::loading-indicator class="h-12 w-12 text-primary-600" />
-                    </div>
-
-                    <div id="onboarding-container"  
-                        data-settings="{{ json_encode([
-                            'publishableKey' => $stripePublicKey,
-                            'clientSecret' => $clientSecret,
-                            'type' => $type,
-                            'containerId' => 'onboarding-container',
-                            'loaderId' => 'onboarding-loader',
-                        ]) }}">
-                    </div>
-                @endif
-            </div>
-        </div>
-    @endif
-</x-filament-panels::page>
-
-
-====
-
-<?php
-
-namespace App\Filament\Pages;
-
-use App\Filament\Pages\BaseStripePage;
-use Illuminate\Support\Facades\Auth;
-use App\Jobs\SendTrainerOnboardedMail;
-use App\Filament\Enum\StripeAccountStatus;
-use App\Models\Club;
-
-class StripeOnboarding extends BaseStripePage
-{
-    protected static string $view = 'filament.pages.stripe.onboarding';
-    protected static ?string $slug = 'stripe/onboarding';
-
-    public ?string $accountId = null;
-    public ?string $type = 'account-onboarding';
-    public ?string $clientSecret = null;
-
-    public $stripeStatus;
-    public array $currentlyDue = [];
-    public ?\App\Models\User $user = null;
-
-    public static function shouldRegisterNavigation(): bool
-    {
-        return false;
-    }
-
-    public function mount(): void
-    {
-        parent::mount();
-        if (! $this->stripeAvailable) {
-            return;
-        }
-
-        $this->user = Auth::user();
-
-        $clubData = Club::whereIn('id', $this->user->getAccessibleClubs())->get();
-        $clubIds   = $clubData->pluck('id')->implode(',');
-        $clubNames = $clubData->pluck('title')->implode(',');
-
-        if (! $this->user->is_onboarded) {
-            if ($this->user->stripe_account_id) {
-                $this->accountId = $this->user->stripe_account_id;
-
-                $session = $this->stripeClient()->accountSessions->create([
-                    'account' => $this->accountId,
-                    'components' => [
-                        'account_onboarding' => ['enabled' => true],
-                    ],
-                ]);
-
-                $this->clientSecret = $session->client_secret;
-            } else {
-                $account = $this->stripeClient()->accounts->create([
-                    'email' => $this->user->email,
-                    'capabilities' => [
-                        'card_payments' => ['requested' => true],
-                        'transfers'     => ['requested' => true],
-                    ],
-                    'metadata' => [
-                        'club_ids'   => $clubIds,
-                        'club_names' => $clubNames,
-                    ],
-                ]);
-
-                $this->accountId = $account->id;
-
-                $session = $this->stripeClient()->accountSessions->create([
-                    'account' => $this->accountId,
-                    'components' => [
-                        'account_onboarding' => ['enabled' => true],
-                    ],
-                ]);
-
-                $this->clientSecret = $session->client_secret;
-                $this->user->update([
-                    'stripe_account_id' => $this->accountId,
-                ]);
-            }
-        }
-
-        // Get stripe account status
-        $account = $this->stripeClient()->accounts->retrieve($this->user->stripe_account_id);
-        $this->currentlyDue = $account->requirements->currently_due;
-        $this->stripeStatus = $this->resolveStripeAccountStatus($account);
-        if ($this->stripeStatus === StripeAccountStatus::COMPLETE) {
-            $this->user->update([
-                'is_onboarded' => true,
-                'onboarded_at' => now(),
-            ]);
-            SendTrainerOnboardedMail::dispatch($this->user);
-        }
-    }
-
-    public function getHeading(): string
-    {
-        return __('stripe.personal_training_onboarding');
-    }
-
-    protected function resolveStripeAccountStatus(object $account): StripeAccountStatus
-    {
-        $requirement = $account->requirements ?? null;
-
-        // Rejected
-        if (
-            isset($requirement->disabled_reason) &&
-            in_array($requirement->disabled_reason, [
-                'rejected.fraud',
-                'rejected.listed',
-                'rejected.terms_of_service',
-                'rejected.other',
-            ])
-        ) {
-            return StripeAccountStatus::REJECTED;
-        }
-
-        // Pending
-        if ($requirement?->disabled_reason === 'requirements.pending_verification') {
-            return StripeAccountStatus::PENDING;
-        }
-
-        // Restricted
-        if (
-            ! empty($requirement?->currently_due) &&
-            ($account->payouts_enabled === false || $account->charges_enabled === false)
-        ) {
-            return StripeAccountStatus::RESTRICTED;
-        }
-
-        // Restricted soon
-        if (
-            ! empty($requirement?->currently_due) &&
-            ! empty($requirement?->current_deadline)
-        ) {
-            return StripeAccountStatus::RESTRICTED_SOON;
-        }
-
-        // Enabled
-        if (
-            ! empty($requirement?->eventually_due) &&
-            $account->payouts_enabled === true &&
-            $account->charges_enabled === true &&
-            empty($requirement?->current_deadline)
-        ) {
-            return StripeAccountStatus::ENABLED;
-        }
-
-        // Complete
-        if (
-            empty($requirement?->eventually_due) &&
-            $account->payouts_enabled === true &&
-            $account->charges_enabled === true
-        ) {
-            return StripeAccountStatus::COMPLETE;
-        }
-
-        return StripeAccountStatus::UNKNOWN;
-    }
-}
-
