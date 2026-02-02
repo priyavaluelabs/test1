@@ -2,11 +2,12 @@
 
 namespace App\Filament\Pages;
 
-use App\Filament\Pages\BaseStripePage;
-use Illuminate\Support\Facades\Auth;
-use App\Jobs\SendTrainerOnboardedMail;
 use App\Filament\Enum\StripeAccountStatus;
+use App\Filament\Pages\BaseStripePage;
+use App\Jobs\SendTrainerOnboardedMail;
 use App\Models\Club;
+use App\Models\User;
+use Illuminate\Support\Facades\Auth;
 
 class StripeOnboarding extends BaseStripePage
 {
@@ -17,9 +18,9 @@ class StripeOnboarding extends BaseStripePage
     public ?string $type = 'account-onboarding';
     public ?string $clientSecret = null;
 
-    public $stripeStatus;
+    public ?StripeAccountStatus $stripeStatus = null;
     public array $currentlyDue = [];
-    public ?\App\Models\User $user = null;
+    public ?User $user = null;
 
     public static function shouldRegisterNavigation(): bool
     {
@@ -29,67 +30,90 @@ class StripeOnboarding extends BaseStripePage
     public function mount(): void
     {
         parent::mount();
+
         if (! $this->stripeAvailable) {
             return;
         }
 
         $this->user = Auth::user();
 
-        $clubData = Club::whereIn('id', $this->user->getAccessibleClubs())->get();
-        $clubIds   = $clubData->pluck('id')->implode(',');
-        $clubNames = $clubData->pluck('title')->implode(',');
-
-        if (! $this->user->is_onboarded) {
-            if ($this->user->stripe_account_id) {
-                $this->accountId = $this->user->stripe_account_id;
-
-                $session = $this->stripeClient()->accountSessions->create([
-                    'account' => $this->accountId,
-                    'components' => [
-                        'account_onboarding' => ['enabled' => true],
-                    ],
-                ]);
-
-                $this->clientSecret = $session->client_secret;
-            } else {
-                $account = $this->stripeClient()->accounts->create([
-                    'email' => $this->user->email,
-                    'capabilities' => [
-                        'card_payments' => ['requested' => true],
-                        'transfers'     => ['requested' => true],
-                    ],
-                    'metadata' => [
-                        'club_ids'   => $clubIds,
-                        'club_names' => $clubNames,
-                    ],
-                ]);
-
-                $this->accountId = $account->id;
-
-                $session = $this->stripeClient()->accountSessions->create([
-                    'account' => $this->accountId,
-                    'components' => [
-                        'account_onboarding' => ['enabled' => true],
-                    ],
-                ]);
-
-                $this->clientSecret = $session->client_secret;
-                $this->user->update([
-                    'stripe_account_id' => $this->accountId,
-                ]);
-            }
+        if (! $this->user) {
+            return;
         }
 
-        // Get stripe account status
-        $account = $this->stripeClient()->accounts->retrieve($this->user->stripe_account_id);
-        $this->currentlyDue = $account->requirements->currently_due;
+        // Create / reuse Stripe account & onboarding session
+        if (! $this->user->is_onboarded) {
+            $this->initialiseStripeAccount();
+        }
+
+        // If still no account ID, stop
+        if (! $this->user->stripe_account_id) {
+            return;
+        }
+
+        // Retrieve Stripe account status
+        $account = $this->stripeClient()
+            ->accounts
+            ->retrieve($this->user->stripe_account_id);
+
+        $requirements = $account->requirements ?? null;
+
+        $this->currentlyDue = $requirements->currently_due ?? [];
         $this->stripeStatus = $this->resolveStripeAccountStatus($account);
-        if ($this->stripeStatus === StripeAccountStatus::COMPLETE) {
+
+        // Mark onboarded ONLY ONCE
+        if (
+            $this->stripeStatus === StripeAccountStatus::COMPLETE &&
+            ! $this->user->is_onboarded
+        ) {
             $this->user->update([
                 'is_onboarded' => true,
                 'onboarded_at' => now(),
             ]);
+
             SendTrainerOnboardedMail::dispatch($this->user);
+        }
+    }
+
+    protected function initialiseStripeAccount(): void
+    {
+        $this->accountId = $this->user->stripe_account_id;
+
+        // Create Stripe account if missing
+        if (! $this->accountId) {
+            $clubs = Club::whereIn('id', $this->user->getAccessibleClubs())->get();
+
+            $account = $this->stripeClient()->accounts->create([
+                'email' => $this->user->email,
+                'capabilities' => [
+                    'card_payments' => ['requested' => true],
+                    'transfers'     => ['requested' => true],
+                ],
+                'metadata' => array_filter([
+                    'club_ids'   => $clubs->pluck('id')->implode(',') ?: null,
+                    'club_names' => $clubs->pluck('title')->implode(',') ?: null,
+                ]),
+            ]);
+
+            $this->accountId = $account->id;
+
+            $this->user->update([
+                'stripe_account_id' => $this->accountId,
+            ]);
+        }
+
+        // Create onboarding session only when needed
+        if (! $this->clientSecret) {
+            $session = $this->stripeClient()
+                ->accountSessions
+                ->create([
+                    'account' => $this->accountId,
+                    'components' => [
+                        'account_onboarding' => ['enabled' => true],
+                    ],
+                ]);
+
+            $this->clientSecret = $session->client_secret;
         }
     }
 
@@ -110,12 +134,12 @@ class StripeOnboarding extends BaseStripePage
                 'rejected.listed',
                 'rejected.terms_of_service',
                 'rejected.other',
-            ])
+            ], true)
         ) {
             return StripeAccountStatus::REJECTED;
         }
 
-        // Pending
+        // Pending verification
         if ($requirement?->disabled_reason === 'requirements.pending_verification') {
             return StripeAccountStatus::PENDING;
         }
@@ -136,7 +160,7 @@ class StripeOnboarding extends BaseStripePage
             return StripeAccountStatus::RESTRICTED_SOON;
         }
 
-        // Enabled
+        // Enabled (but still has future requirements)
         if (
             ! empty($requirement?->eventually_due) &&
             $account->payouts_enabled === true &&
@@ -146,7 +170,7 @@ class StripeOnboarding extends BaseStripePage
             return StripeAccountStatus::ENABLED;
         }
 
-        // Complete
+        // Fully complete
         if (
             empty($requirement?->eventually_due) &&
             $account->payouts_enabled === true &&
