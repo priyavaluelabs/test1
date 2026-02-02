@@ -1,99 +1,160 @@
-namespace App\Filament\Enum;
+<?php
 
-enum StripeAccountStatus: string
+namespace App\Filament\Pages;
+
+use App\Filament\Pages\BaseStripePage;
+use Illuminate\Support\Facades\Auth;
+use App\Jobs\SendTrainerOnboardedMail;
+use App\Filament\Enum\StripeAccountStatus;
+use App\Models\Club;
+
+class StripeOnboarding extends BaseStripePage
 {
-    case PENDING         = 'pending';
-    case RESTRICTED      = 'restricted';
-    case RESTRICTED_SOON = 'restricted_soon';
-    case ENABLED         = 'enabled';
-    case COMPLETE        = 'complete';
-    case REJECTED        = 'rejected';
-    case UNKNOWN         = 'unknown';
+    protected static string $view = 'filament.pages.stripe.onboarding';
+    protected static ?string $slug = 'stripe/onboarding';
 
-    public function title(): string
+    public ?string $accountId = null;
+    public ?string $type = 'account-onboarding';
+    public ?string $clientSecret = null;
+
+    public $stripeStatus;
+    public array $currentlyDue = [];
+    public ?\App\Models\User $user = null;
+
+    public static function shouldRegisterNavigation(): bool
     {
-        return match ($this) {
-            self::PENDING         => 'Onboarding in Progress',
-            self::RESTRICTED      => 'Account Restricted',
-            self::RESTRICTED_SOON => 'Action Required Soon',
-            self::ENABLED         => 'Account Enabled',
-            self::COMPLETE        => 'Onboarding Completed!',
-            self::REJECTED        => 'Account Not Approved',
-            self::UNKNOWN         => 'Account Status Unknown',
-        };
+        return false;
     }
 
-    public function message(): string
+    public function mount(): void
     {
-        return match ($this) {
-            self::PENDING =>
-                'Your account details are under review. Please complete the pending verification steps to continue.',
+        parent::mount();
+        if (! $this->stripeAvailable) {
+            return;
+        }
 
-            self::RESTRICTED =>
-                'Your Stripe account has some pending requirements. Payouts and charges are temporarily unavailable until these are resolved.',
+        $this->user = Auth::user();
 
-            self::RESTRICTED_SOON =>
-                'Additional information is needed to keep your Stripe account active. Please complete the required steps before the deadline.',
+        $clubData = Club::whereIn('id', $this->user->getAccessibleClubs())->get();
+        $clubIds   = $clubData->pluck('id')->implode(',');
+        $clubNames = $clubData->pluck('title')->implode(',');
 
-            self::ENABLED =>
-                'Your Stripe account is active. Some additional details may be required later.',
+        if (! $this->user->is_onboarded) {
+            if ($this->user->stripe_account_id) {
+                $this->accountId = $this->user->stripe_account_id;
 
-            self::COMPLETE =>
-                'Your Stripe account is active and ready to use.',
+                $session = $this->stripeClient()->accountSessions->create([
+                    'account' => $this->accountId,
+                    'components' => [
+                        'account_onboarding' => ['enabled' => true],
+                    ],
+                ]);
 
-            self::REJECTED =>
-                'Your Stripe account could not be approved. Please contact support for more information.',
+                $this->clientSecret = $session->client_secret;
+            } else {
+                $account = $this->stripeClient()->accounts->create([
+                    'email' => $this->user->email,
+                    'capabilities' => [
+                        'card_payments' => ['requested' => true],
+                        'transfers'     => ['requested' => true],
+                    ],
+                    'metadata' => [
+                        'club_ids'   => $clubIds,
+                        'club_names' => $clubNames,
+                    ],
+                ]);
 
-            self::UNKNOWN =>
-                'We are unable to determine your Stripe account status at the moment.',
-        };
+                $this->accountId = $account->id;
+
+                $session = $this->stripeClient()->accountSessions->create([
+                    'account' => $this->accountId,
+                    'components' => [
+                        'account_onboarding' => ['enabled' => true],
+                    ],
+                ]);
+
+                $this->clientSecret = $session->client_secret;
+                $this->user->update([
+                    'stripe_account_id' => $this->accountId,
+                ]);
+            }
+        }
+
+        // Get stripe account status
+        $account = $this->stripeClient()->accounts->retrieve($this->user->stripe_account_id);
+        $this->currentlyDue = $account->requirements->currently_due;
+        $this->stripeStatus = $this->resolveStripeAccountStatus($account);
+        if ($this->stripeStatus === StripeAccountStatus::COMPLETE) {
+            $this->user->update([
+                'is_onboarded' => true,
+                'onboarded_at' => now(),
+            ]);
+            SendTrainerOnboardedMail::dispatch($this->user);
+        }
     }
 
-    /**
-     * Tailwind UI classes
-     */
-    public function uiColors(): array
+    public function getHeading(): string
     {
-        return match ($this) {
-            self::COMPLETE => [
-                'bg'     => 'bg-green-100',
-                'border' => 'border-green-300',
-                'text'   => 'text-green-800',
-            ],
+        return __('stripe.personal_training_onboarding');
+    }
 
-            self::ENABLED => [
-                'bg'     => 'bg-blue-100',
-                'border' => 'border-blue-300',
-                'text'   => 'text-blue-800',
-            ],
+    protected function resolveStripeAccountStatus(object $account): StripeAccountStatus
+    {
+        $requirement = $account->requirements ?? null;
 
-            self::PENDING,
-            self::RESTRICTED_SOON => [
-                'bg'     => 'bg-yellow-100',
-                'border' => 'border-yellow-300',
-                'text'   => 'text-yellow-800',
-            ],
+        // Rejected
+        if (
+            isset($requirement->disabled_reason) &&
+            in_array($requirement->disabled_reason, [
+                'rejected.fraud',
+                'rejected.listed',
+                'rejected.terms_of_service',
+                'rejected.other',
+            ])
+        ) {
+            return StripeAccountStatus::REJECTED;
+        }
 
-            self::RESTRICTED,
-            self::REJECTED,
-            self::UNKNOWN => [
-                'bg'     => 'bg-red-100',
-                'border' => 'border-red-300',
-                'text'   => 'text-red-800',
-            ],
-        };
+        // Pending
+        if ($requirement?->disabled_reason === 'requirements.pending_verification') {
+            return StripeAccountStatus::PENDING;
+        }
+
+        // Restricted
+        if (
+            ! empty($requirement?->currently_due) &&
+            ($account->payouts_enabled === false || $account->charges_enabled === false)
+        ) {
+            return StripeAccountStatus::RESTRICTED;
+        }
+
+        // Restricted soon
+        if (
+            ! empty($requirement?->currently_due) &&
+            ! empty($requirement?->current_deadline)
+        ) {
+            return StripeAccountStatus::RESTRICTED_SOON;
+        }
+
+        // Enabled
+        if (
+            ! empty($requirement?->eventually_due) &&
+            $account->payouts_enabled === true &&
+            $account->charges_enabled === true &&
+            empty($requirement?->current_deadline)
+        ) {
+            return StripeAccountStatus::ENABLED;
+        }
+
+        // Complete
+        if (
+            empty($requirement?->eventually_due) &&
+            $account->payouts_enabled === true &&
+            $account->charges_enabled === true
+        ) {
+            return StripeAccountStatus::COMPLETE;
+        }
+
+        return StripeAccountStatus::UNKNOWN;
     }
 }
-
-
-
-=====
-
-@if ($stripeStatus && empty($currentlyDue))
-    @php($color = $stripeStatus->uiColors())
-
-    <div class="p-4 rounded-lg {{ $color['bg'] }} {{ $color['border'] }} {{ $color['text'] }}">
-        <strong>{{ $stripeStatus->title() }}</strong><br>
-        {{ $stripeStatus->message() }}
-    </div>
-@endif
