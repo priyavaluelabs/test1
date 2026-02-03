@@ -6,41 +6,49 @@
             <tr>
                 <td bgcolor="white">
                     <div>
-                        <p style="color: #8B1E2D; font-weight: 600; font-size:16px; padding-bottom: 16px;">
+
+                        {{-- Heading --}}
+                        <p style="color: #8B1E2D; font-weight: 600; font-size:16px; margin-bottom:16px;">
                             {{ __('mail.customer_purchase.heading') }}
                         </p>
 
+                        {{-- Greeting and Thank You --}}
                         @foreach([
                             __('mail.customer_purchase.greeting', ['name' => $customerName]),
-                            __('mail.customer_purchase.thank_you'),
+                            __('mail.customer_purchase.thank_you')
                         ] as $paragraph)
-                            <p style="padding-bottom: 16px;">
-                                {{ $paragraph }}
-                            </p>
+                            <p style="margin-bottom:16px;">{{ $paragraph }}</p>
                         @endforeach
 
-                        <div style="padding-bottom: 16px;">
-                            <strong style="padding-bottom:16px;">{{ __('mail.customer_purchase.order_details_title') }}</strong>
+                        {{-- Order Details --}}
+                        <div style="margin-bottom:16px;">
+                            <strong style="display:block; margin-bottom:16px;">
+                                {{ __('mail.customer_purchase.order_details_title') }}
+                            </strong>
                             <div class="purchase-summary" style="color: #888888; padding-left:25px;">
-                                <p style="padding-bottom:10px; padding-top:10px;">{{ $productName }}</p>
-                                <p style="padding-bottom:10px;">{{ $trainerName }}<p>
-                                <p style="padding-bottom:10px;">{{ $amount }}<p>
-                                <p style="padding-bottom:10px;">{{ ucfirst($paymentMethod) }}<p>
-                                <p>{{ $purchasedAt->format('F jS Y, h:i A') }}<p>
+                                @foreach([
+                                    $productName,
+                                    $trainerName,
+                                    $amount,
+                                    ucfirst($paymentMethod),
+                                    $purchasedAt->format('F jS Y, h:i A')
+                                ] as $detail)
+                                    <p style="margin:10px 0;">{{ $detail }}</p>
+                                @endforeach
                             </div>
                         </div>
                     </div>
                 </td>
             </tr>
+
+            {{-- Footer --}}
             <tr>
                 <td>
                     <div>
-                        <p style="padding-bottom: 16px;">
+                        <p style="margin-bottom:16px;">
                             {{ __('mail.customer_purchase.automated_note', ['trainer' => $trainerName]) }}
                         </p>
-                        <p style="padding-bottom: 8px;">
-                            {{ __('mail.thank_you') }}
-                        </p>
+                        <p>{{ __('mail.thank_you') }}</p>
                     </div>
                 </td>
             </tr>
