@@ -1,1 +1,6 @@
-Clients may book one-off sessions via the Snap App
+<li>
+    {!! __('mail.trainer_purchase.booking_points.snap_app', [
+        'client' => '<strong>Clients</strong>',
+        'snap_app' => '<strong>Snap App</strong>',
+    ]) !!}
+</li>
