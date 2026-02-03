@@ -1,24 +1,3 @@
-$paymentIntent = $this->stripeClient()->paymentIntents->retrieve('pi_3SwOOJB0UJ8WBOPV0NpVViBU', [],  ['stripe_account' => 'acct_1SslGjB0UJ8WBOPV']);
-        $paymentMethodId = $paymentIntent->payment_method;
-        $paymentMethod = $this->stripeClient()->paymentMethods->retrieve($paymentMethodId, [],  ['stripe_account' => 'acct_1SslGjB0UJ8WBOPV']);
-
-        if ($paymentMethod->type === 'card') {
-            $card = $paymentMethod->card;
-            
-            SendCustomerPurchaseMail::dispatch(
-                trainer: $this->user,
-                clientName: 'testing',
-                productName: 'AUD Product',
-                paymentMethod: "{$card->brand} ending in {$card->last4}",
-                amount: '200.00',
-                purchasedAt: now()
-            );
-        }
-
-
-===
-
-
 <?php
 
 namespace App\Listners;
@@ -40,93 +19,127 @@ class HandlePaymentIntentSucceeded implements ShouldQueue
 
     public $tries = 3;
     public $timeout = 120;
-    protected $platform;
+
+    protected StripeClient $stripe;
 
     public function handle($event)
     {
         $stripeEvent = $event->event;
         $connectedAccountId = $stripeEvent->account ?? null;
+
+        if (! $connectedAccountId) {
+            return;
+        }
+
         try {
-            if (! $connectedAccountId) {
-                return;
-            }
-
             $trainerUser = User::where('stripe_account_id', $connectedAccountId)->first();
-
             if (! $trainerUser) {
                 return;
             }
-            
+
             $trainerStripeSecretKey = optional($trainerUser->corporatePartner)->stripe_secret_key;
             if (! $trainerStripeSecretKey) {
                 return;
             }
 
-            // Create ONCE per job
-            $this->platform = new StripeClient($trainerStripeSecretKey);
-            $paymentIntent = $stripeEvent->data->object;
+            // Create Stripe client once
+            $this->stripe = new StripeClient($trainerStripeSecretKey);
 
-            $customer = $this->platform->customers->retrieve(
+            /** ---------------------------------
+             * Retrieve full PaymentIntent
+             * --------------------------------- */
+            $paymentIntentId = $stripeEvent->data->object->id;
+
+            $paymentIntent = $this->stripe->paymentIntents->retrieve(
+                $paymentIntentId,
+                [],
+                ['stripe_account' => $connectedAccountId]
+            );
+
+            /** ---------------------------------
+             * Retrieve Customer
+             * --------------------------------- */
+            $customer = $this->stripe->customers->retrieve(
                 $paymentIntent->customer,
                 [],
                 ['stripe_account' => $connectedAccountId]
             );
-         
-            $stripeCustomerId = $customer->id;
-            $customerEmail = $customer->email ?? null;
-            $customerName  = $customer->name ?? 'Customer';
 
-            $userStripeProfileExist = PTBillingUserStripeProfile::where('stripe_customer_id', $stripeCustomerId)
+            $stripeCustomerId = $customer->id;
+            $customerEmail    = $customer->email ?? null;
+            $customerName     = $customer->name ?? 'Customer';
+
+            $userStripeProfile = PTBillingUserStripeProfile::where('stripe_customer_id', $stripeCustomerId)
                 ->where('stripe_account_id', $connectedAccountId)
                 ->first();
 
-            if ($userStripeProfileExist) {
-                PTBillingUserTrainer::firstOrCreate(
-                    [
-                        'user_id' => $userStripeProfileExist->user_id,
-                        'trainer_id' => $trainerUser->id,
-                    ]
-                );
+            if ($userStripeProfile) {
+                PTBillingUserTrainer::firstOrCreate([
+                    'user_id'    => $userStripeProfile->user_id,
+                    'trainer_id' => $trainerUser->id,
+                ]);
             }
 
-            //Add punch card
-            $punchCardData =  [
-                'user_id' => $userStripeProfileExist->user_id,
-                'trainer_id' => $trainerUser->id,
-                'product_name' => $paymentIntent->metadata->product_name,
-                'total_session' => $paymentIntent->metadata->session_count,
+            /** ---------------------------------
+             * Create Punch Card
+             * --------------------------------- */
+            PTBillingUserPunchCard::create([
+                'user_id'        => $userStripeProfile->user_id,
+                'trainer_id'     => $trainerUser->id,
+                'product_name'   => $paymentIntent->metadata->product_name ?? '',
+                'total_session'  => $paymentIntent->metadata->session_count ?? 0,
                 'purchased_at'   => now(),
-            ];
-            PTBillingUserPunchCard::Create($punchCardData);
-            
-            // Get currency symbol
+            ]);
+
+            /** ---------------------------------
+             * Get Payment Method (card brand + last4)
+             * --------------------------------- */
+            $paymentMethodLabel = 'Card';
+
+            if ($paymentIntent->payment_method) {
+                $paymentMethod = $this->stripe->paymentMethods->retrieve(
+                    $paymentIntent->payment_method,
+                    [],
+                    ['stripe_account' => $connectedAccountId]
+                );
+
+                if ($paymentMethod->type === 'card') {
+                    $card = $paymentMethod->card;
+                    $paymentMethodLabel = ucfirst($card->brand) . ' ending in ' . $card->last4;
+                }
+            }
+
+            /** ---------------------------------
+             * Amount & Currency
+             * --------------------------------- */
             $currencySymbol = optional($trainerUser->corporatePartner)->currency_symbol ?? '$';
+            $amount = $currencySymbol . number_format($paymentIntent->amount / 100, 2);
 
-            // Get payment method
-            $paymentMethod = $paymentIntent->payment_method_types[0] ?? 'card';
-
-            // Send trainer purchase email
+            /** ---------------------------------
+             * Send Emails
+             * --------------------------------- */
             SendTrainerPurchaseMail::dispatch(
                 trainer: $trainerUser,
                 clientName: $customerName,
-                productName: $paymentIntent->metadata->product_name,
-                amount: $currencySymbol.number_format($paymentIntent->amount / 100, 2),
+                productName: $paymentIntent->metadata->product_name ?? '',
+                amount: $amount,
                 purchasedAt: now()
             );
 
-            // Send customer purchase email
             SendCustomerPurchaseMail::dispatch(
                 trainer: $trainerUser,
                 clientName: $customerName,
-                productName: $paymentIntent->metadata->product_name,
-                paymentMethod: $paymentMethod,
-                amount: $currencySymbol.number_format($paymentIntent->amount / 100, 2),
+                productName: $paymentIntent->metadata->product_name ?? '',
+                paymentMethod: $paymentMethodLabel,
+                amount: $amount,
                 purchasedAt: now()
             );
 
-           Log::info("Stripe payment success for {$customerEmail}");
-        } catch (\Exception $e) {
-            Log::error("Stripe payment successed failed: ".$e->getMessage());
+            Log::info("Stripe payment succeeded for {$customerEmail}");
+        } catch (\Throwable $e) {
+            Log::error('Stripe payment succeeded handler failed', [
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 }
