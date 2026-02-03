@@ -1,6 +1,10 @@
-@component('emails.layouts.template')
-
-{{-- Hidden preview text --}}
-<span style="display:none !important; visibility:hidden; mso-hide:all; font-size:1px; color:#ffffff; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden;">
-    {{ __('mail.trainer_onboarding.preview_text') }}
-</span>
+ 'trainer_onboarding' => [
+        'subject' => 'Onboarding Complete',
+        'preview_text' => 'Take your next steps today',
+        'preview_text' => 'You\'re almost ready to start accepting payments',
+        'intro' => 'Congratulations, :name!', 
+        'intro1' => 'Your Snap Fitness payments account has been successfully created. You can now set up the products and services you wish to offer your clients.',
+        'setup_info' => 'Please note that you are responsible for determining and complying with all applicable tax obligations, and for ensuring your product setup follows all local regulations.',
+        'manager_help' => 'Your club manager can assist you with creating bookable sessions in Glofox.This will allow your clients to manage their time with you in the Snap Fitness member app.',
+        'footer' => 'This is an automated technical support email. For questions about your service offerings and pricing, please contact the team at your gym directly.',
+    ],
