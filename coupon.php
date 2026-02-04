@@ -1,67 +1,53 @@
-@component('emails.layouts.template', [
-    'previewText' => __('mail.customer_purchase.preview_text_short')
-])
+<?php
 
-@php
-    $headingStyle   = 'color:#8B1E2D;font-weight:600;font-size:16px;margin-bottom:16px;';
-    $paragraphStyle = 'margin-bottom:16px;';
-    $detailStyle    = 'margin:10px 0;';
-    $mutedText      = 'color:#4F4F4F;';
-@endphp
+namespace App\Listners;
 
-<table class="module" width="100%" cellpadding="0" cellspacing="0" style="table-layout:fixed;">
-    <tbody>
-        <tr>
-            <td bgcolor="white" style="padding:10px;">
-                <div>
-                    {{-- Heading --}}
-                    <p style="{{ $headingStyle }}">
-                        {{ __('mail.customer_purchase.heading') }}
-                    </p>
+use App\Jobs\PropagateStripeProductsToTrainer;
+use App\Jobs\SendTrainerOnboardedMail;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Support\Facades\Log;
+use App\Models\User;
 
-                    {{-- Greeting --}}
-                    <p style="{{ $paragraphStyle }}">
-                        {{ __('mail.customer_purchase.greeting', ['name' => $customerName]) }}
-                    </p>
+class HandleStripeAccountOnboarded implements ShouldQueue
+{
+    use InteractsWithQueue;
 
-                    {{-- Thank you --}}
-                    <p style="{{ $paragraphStyle }}">
-                        {{ __('mail.customer_purchase.thank_you') }}
-                    </p>
+    public $tries = 3;
+    public $timeout = 30;
 
-                    {{-- Order Details --}}
-                    <div style="margin-bottom:16px;">
-                        <strong style="display:block;margin-bottom:16px;">
-                            {{ __('mail.customer_purchase.order_details_title') }}
-                        </strong>
+    public function handle($event)
+    {
+        $stripeEvent = $event->event;
+        $account = $stripeEvent->data->object;
 
-                        <div style="{{ $mutedText }}padding-left:25px;">
-                            <p style="{{ $detailStyle }}">{{ $productName }}</p>
-                            <p style="{{ $detailStyle }}">{{ $trainerName }}</p>
-                            <p style="{{ $detailStyle }}">{{ $amount }}</p>
-                            <p style="{{ $detailStyle }}">{{ ucfirst($paymentMethod) }}</p>
-                            <p style="{{ $detailStyle }}">
-                                {{ $purchasedAt->format('F jS Y, h:i A') }}
-                            </p>
-                        </div>
-                    </div>
+        try {
+            $email = $account->email 
+                ?? ($account->business_profile->support_email ?? null);
 
-                    <p style="padding-bottom:8px;">
-                        {{ __('mail.thank_you') }}
-                    </p>
-                </div>
-            </td>
-        </tr>
+            if (! $email) {
+                return;
+            }
 
-        {{-- Footer --}}
-        <tr>
-            <td style="padding:0 10px 10px;">
-                <p style="{{ $paragraphStyle }}">
-                    {{ __('mail.customer_purchase.automated_note', ['trainer' => $trainerName]) }}
-                </p>
-            </td>
-        </tr>
-    </tbody>
-</table>
+            $user = User::where('email', $email)->first();
 
-@endcomponent
+            if (! $user) {
+                return;
+            }
+
+            if ($account->details_submitted === true &&
+                empty($account->requirements->currently_due ?? []) &&
+                empty($account->requirements->past_due ?? []) &&
+                ! $user->is_onboarded) {
+                PropagateStripeProductsToTrainer::dispatch(
+                    $account->id,
+                    optional($user->corporatePartner)->stripe_secret_key
+                );
+            }
+
+            Log::info("Stripe onboarding finished for {$email}");
+        } catch (\Exception $e) {
+            Log::error("Stripe account onboarded failed: ".$e->getMessage());
+        }
+    }
+}
