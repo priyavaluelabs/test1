@@ -1,43 +1,83 @@
-public function handle(): void
+<?php
+
+namespace App\Jobs;
+
+use App\Models\FodUserRole;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\SerializesModels;
+use Illuminate\Foundation\Queue\Queueable;
+use App\Services\Glofox\Models\User\Staff;
+use App\Models\User;
+use App\Models\Club;
+
+class VerifyGlofoxMember implements ShouldQueue
 {
-    $this->resetAllGlofoxVerification();
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    $accessibleClubs = Club::whereIn('id', $this->user->getAccessibleClubs())->get();
-    $userEmail = strtolower('priya.singh+1991@valuelabs.com');
+    public function __construct(public User $user) {}
 
-    foreach ($accessibleClubs as $club) {
-        if (empty($club->glofox_branch_id)) {
-            continue;
-        }
+    public function handle(): void
+    {
+        $this->resetAllGlofoxVerification();
+        
+        $accessibleClubs = Club::whereIn('id', $this->user->getAccessibleClubs())->get();
 
-        $staff   = new Staff($this->getGlofoxConfig($club->glofox_branch_id));
-        $page    = 1;
+        $userEmail = strtolower('priya.singh+1991@valuelabs.com');
 
-        do {
-            $response = $staff->get(null, $page);
-            $data     = $response->data ?? [];
-
-            if (!is_array($data)) {
-                break;
+        foreach ($accessibleClubs as $club) {
+            if (empty($club->glofox_branch_id)) {
+                continue;
             }
 
-            foreach ($data as $trainer) {
-                if (
-                    strtolower($trainer['email'] ?? '') === $userEmail &&
-                    $trainer['branch_id'] == $club->glofox_branch_id
-                ) {
-                    FodUserRole::where('club_id', $club->id)
-                        ->where('user_id', $this->user->id)
-                        ->update([
-                            'glofox_verified_at' => now(),
-                        ]);
+            $glofoxConfig = $this->getGlofoxConfig($club->glofox_branch_id);
+            $page    = 1;
 
-                    break 3; // exit trainer loop, pagination loop, club loop
+            do {
+                $response   = (new Staff($glofoxConfig, $page))->get();
+                $data     = $response->data ?? [];
+
+                if (!is_array($data)) {
+                    break;
                 }
-            }
 
-            $page++;
+                foreach ($data as $trainer) {
+                    if (
+                        strtolower($trainer['email'] ?? '') === $userEmail &&
+                        $trainer['branch_id'] == $club->glofox_branch_id
+                    ) {
+                        FodUserRole::where('club_id', $club->id)
+                            ->where('user_id', $this->user->id)
+                            ->update([
+                                'glofox_verified_at' => now(),
+                            ]);
 
-        } while ($response->has_more ?? false);
+                        break 3;
+                    }
+                }
+
+                $page++;
+
+            } while ($response->has_more ?? false);
+        }
+    }
+
+    private function resetAllGlofoxVerification(): void
+    {
+        FodUserRole::where('user_id', $this->user->id)
+            ->whereNotNull('glofox_verified_at')
+            ->update([
+                'glofox_verified_at' => null,
+            ]);
+    }
+
+    private function getGlofoxConfig($branchId)
+    {
+        return [
+            'api_key'       => $this->user->corporatePartner->glofox_api_key,
+            'api_token'     => $this->user->corporatePartner->glofox_api_token,
+            'branch_id'     => $branchId,
+        ];
     }
 }
