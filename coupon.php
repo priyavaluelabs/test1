@@ -32,7 +32,7 @@ class VerifyGlofoxMember implements ShouldQueue
             }
 
             $glofoxConfig = $this->getGlofoxConfig($club->glofox_branch_id);
-            $page    = 1;
+            $page = 1;
 
             do {
                 $response   = (new Staff($glofoxConfig, $page))->get();
@@ -53,7 +53,7 @@ class VerifyGlofoxMember implements ShouldQueue
                                 'glofox_verified_at' => now(),
                             ]);
 
-                        break 3;
+                        break;
                     }
                 }
 
