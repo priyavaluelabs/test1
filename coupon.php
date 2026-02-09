@@ -19,6 +19,7 @@ class StripeOnboarding extends BaseStripePage
 
     public ?StripeAccountStatus $stripeStatus = null;
     public array $currentlyDue = [];
+
     public ?\App\Models\User $user = null;
 
     public bool $showOnboarding = false;
@@ -26,6 +27,13 @@ class StripeOnboarding extends BaseStripePage
     public bool $clubNotVerifiedMessage = false;
 
     public array $clubsWithGlofoxStatus = [];
+
+    /**
+     * Livewire listeners
+     */
+    protected $listeners = [
+        'start-stripe-onboarding' => 'handleStripeOnboarding',
+    ];
 
     public static function shouldRegisterNavigation(): bool
     {
@@ -43,13 +51,19 @@ class StripeOnboarding extends BaseStripePage
         $this->user = Auth::user();
 
         $this->loadGlofoxStatus();
+
         if ($this->isUserGlofoxFullyVerified) {
+            // UI first
             $this->showOnboarding = true;
-            $this->ensureStripeAccount();
-            $this->syncStripeAccountStatus();
+
+            // Stripe logic AFTER render
+            $this->dispatch('start-stripe-onboarding');
         }
     }
 
+    /**
+     * Called when user clicks "Verify"
+     */
     public function verify(): void
     {
         $this->loadGlofoxStatus();
@@ -59,13 +73,29 @@ class StripeOnboarding extends BaseStripePage
         }
     }
 
+    /**
+     * Called when user clicks "Continue"
+     */
     public function continue(): void
     {
+        // UI update first
         $this->showOnboarding = true;
-        $this->ensureStripeAccount();
-        $this->syncStripeAccountStatus();
+
+        // Heavy Stripe logic in next request
+        $this->dispatch('start-stripe-onboarding');
     }
 
+    /**
+     * Heavy Stripe work (runs after UI render)
+     */
+    public function handleStripeOnboarding(): void
+    {
+        $this->ensureStripeAccount();
+    }
+
+    /**
+     * Load Glofox verification status
+     */
     protected function loadGlofoxStatus(): void
     {
         VerifyGlofoxMember::dispatch($this->user);
@@ -78,6 +108,9 @@ class StripeOnboarding extends BaseStripePage
         $this->isUserGlofoxFullyVerified = $service->isUserGlofoxFullyVerified($this->user);
     }
 
+    /**
+     * Ensure Stripe account + session exists
+     */
     protected function ensureStripeAccount(): void
     {
         if ($this->user->is_onboarded) {
@@ -98,6 +131,9 @@ class StripeOnboarding extends BaseStripePage
         $this->createAccountSession($account->id);
     }
 
+    /**
+     * Create Stripe Connected Account
+     */
     protected function createStripeAccount(): object
     {
         $mainAccount = $this->stripeClient()->accounts->retrieve();
@@ -126,18 +162,32 @@ class StripeOnboarding extends BaseStripePage
         ]);
     }
 
+    /**
+     * Create / reuse Stripe Account Session
+     */
     protected function createAccountSession(string $accountId): void
     {
-        $session = $this->stripeClient()->accountSessions->create([
-            'account' => $accountId,
-            'components' => [
-                'account_onboarding' => ['enabled' => true],
-            ],
-        ]);
+        $cacheKey = "stripe_account_session_{$accountId}";
 
-        $this->clientSecret = $session->client_secret;
+        $this->clientSecret = cache()->remember(
+            $cacheKey,
+            now()->addMinutes(10),
+            function () use ($accountId) {
+                $session = $this->stripeClient()->accountSessions->create([
+                    'account' => $accountId,
+                    'components' => [
+                        'account_onboarding' => ['enabled' => true],
+                    ],
+                ]);
+
+                return $session->client_secret;
+            }
+        );
     }
 
+    /**
+     * Sync Stripe account status (call on refresh / webhook)
+     */
     protected function syncStripeAccountStatus(): void
     {
         if (! $this->user->stripe_account_id) {
