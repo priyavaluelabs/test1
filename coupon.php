@@ -1,80 +1,74 @@
 <?php
 
-namespace App\Listners;
+namespace App\Jobs;
 
-use App\Jobs\PropagateStripeProductsToTrainer;
+use App\Models\FodUserRole;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Queue\SerializesModels;
+use Illuminate\Foundation\Queue\Queueable;
+use App\Services\Glofox\Models\User\Staff;
 use App\Models\User;
-use Stripe\StripeClient;
+use App\Models\Club;
 
-class HandleStripeAccountOnboarded implements ShouldQueue
+class VerifyGlofoxMember implements ShouldQueue
 {
-    use InteractsWithQueue;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public $tries = 3;
-    public $timeout = 30;
+    public function __construct(public User $user) {}
 
-    public function handle($event)
+    public function handle(): void
     {
-        $stripeEvent = $event->event;
-        $account = $stripeEvent->data->object;
+        $this->resetAllGlofoxVerification();
+        
+        $accessibleClubs = Club::whereIn('id', $this->user->getAccessibleClubs())->get();
 
-        try {
-            // 1. Resolve email
-            $email = $account->email
-                ?? ($account->business_profile->support_email ?? null);
+        $userEmail = strtolower('priya.singh+1991@valuelabs.com');
 
-            if (! $email) {
-                return;
+        foreach ($accessibleClubs as $club) {
+            if (empty($club->glofox_branch_id)) {
+                continue;
             }
 
-            // 2. Resolve user
-            $user = User::where('email', $email)->first();
-
-            if (! $user) {
-                return;
+            $glofoxConfig = $this->getGlofoxConfig($club->glofox_branch_id);
+            $response     = (new Staff($glofoxConfig))->get();
+            $data = $response->data ?? [];
+            if (!is_array($data)) {
+                continue;
             }
 
-            // 3. Check Stripe account readiness
-            if (
-                $account->details_submitted !== true ||
-                ! empty($account->requirements->currently_due ?? []) ||
-                ! empty($account->requirements->past_due ?? []) ||
-                $user->is_onboarded
-            ) {
-                return;
+            foreach ($data as $trainer) {
+                if (!empty($trainer['email']) && strtolower($trainer['email']) === $userEmail &&
+                    $trainer['branch_id']  == $club->glofox_branch_id
+                ) {
+                    FodUserRole::where('club_id', $club->id)
+                        ->where('user_id', $this->user->id)
+                        ->update([
+                            'glofox_verified_at' => now(),
+                        ]);
+
+                    break;
+                }
             }
-
-            // 4. Stripe client (platform key)
-            $stripe = new StripeClient(
-                optional($user->corporatePartner)->stripe_secret_key
-            );
-
-            // 5. Check if products already exist on connected account
-            $products = $stripe->products->all(
-                ['limit' => 1],
-                ['stripe_account' => $account->id]
-            );
-
-            if (! empty($products->data)) {
-                Log::info("Skipping product propagation – products already exist for {$account->id}");
-                return;
-            }
-
-            // 6. Dispatch propagation job
-            PropagateStripeProductsToTrainer::dispatch(
-                $account->id,
-                optional($user->corporatePartner)->stripe_secret_key
-            );
-
-            Log::info("Stripe onboarding finished & products propagated for {$email}");
-
-        } catch (\Exception $e) {
-            Log::error("Stripe account onboarded failed: " . $e->getMessage(), [
-                'account_id' => $account->id ?? null,
-            ]);
         }
+    }
+
+    private function resetAllGlofoxVerification(): void
+    {
+        FodUserRole::where('user_id', $this->user->id)
+            ->whereNotNull('glofox_verified_at')
+            ->update([
+                'glofox_verified_at' => null,
+            ]);
+    }
+
+    private function getGlofoxConfig($branchId)
+    {
+        return [
+            'api_key'       => $this->user->corporatePartner->glofox_api_key,
+            'api_token'     => $this->user->corporatePartner->glofox_api_token,
+            'branch_id'     => $branchId,
+        ];
     }
 }
